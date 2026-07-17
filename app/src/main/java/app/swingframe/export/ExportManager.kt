@@ -11,10 +11,8 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
-import androidx.media3.common.C
 import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
-import androidx.media3.common.audio.SpeedProvider
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.CanvasOverlay
 import androidx.media3.effect.OverlayEffect
@@ -78,12 +76,19 @@ class ExportManager(private val context: Context) {
         request: VideoExportRequest,
         onProgress: (Int) -> Unit,
     ): Uri = coroutineScope {
+        require(request.frameTimestampsUs.isNotEmpty()) { "The export timeline is empty." }
         val safeStart = request.startFrameIndex.coerceIn(request.frameTimestampsUs.indices)
         val safeEnd = request.endFrameIndex.coerceIn(safeStart, request.frameTimestampsUs.lastIndex)
         val sourceStartUs = request.frameTimestampsUs[safeStart]
         val sourceEndExclusiveUs = ExportTimelineMapper.endExclusiveTimestampUs(request.frameTimestampsUs, safeEnd)
         val speed = request.playbackSpeed.coerceIn(0.1f, 1f)
-        val tempDirectory = File(context.cacheDir, "exports").apply { mkdirs() }
+        val tempDirectory = withContext(Dispatchers.IO) {
+            File(context.cacheDir, "exports").apply {
+                mkdirs()
+                val staleBefore = System.currentTimeMillis() - STALE_EXPORT_MAX_AGE_MS
+                listFiles()?.filter { it.lastModified() < staleBefore }?.forEach { stale -> stale.delete() }
+            }
+        }
         val tempFile = File(tempDirectory, "${UUID.randomUUID()}.mp4")
 
         suspendCancellableCoroutine { continuation ->
@@ -203,7 +208,14 @@ class ExportManager(private val context: Context) {
                     "The frame image could not be encoded."
                 }
             } ?: error("Android could not open the image output stream.")
-            resolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
+            check(
+                resolver.update(
+                    uri,
+                    ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) },
+                    null,
+                    null,
+                ) > 0,
+            ) { "Android could not publish the image to the gallery." }
             return uri
         } catch (error: Throwable) {
             resolver.delete(uri, null, null)
@@ -225,7 +237,14 @@ class ExportManager(private val context: Context) {
             resolver.openOutputStream(uri, "w")?.use { output ->
                 tempFile.inputStream().buffered().use { input -> input.copyTo(output) }
             } ?: error("Android could not open the video output stream.")
-            resolver.update(uri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
+            check(
+                resolver.update(
+                    uri,
+                    ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) },
+                    null,
+                    null,
+                ) > 0,
+            ) { "Android could not publish the video to the gallery." }
             return uri
         } catch (error: Throwable) {
             resolver.delete(uri, null, null)
@@ -248,5 +267,6 @@ class ExportManager(private val context: Context) {
 
     private companion object {
         const val PROGRESS_POLL_MS = 180L
+        const val STALE_EXPORT_MAX_AGE_MS = 24L * 60L * 60L * 1_000L
     }
 }

@@ -2,7 +2,6 @@ package app.swingframe.model
 
 import android.graphics.Bitmap
 import android.net.Uri
-import androidx.media3.common.Player
 import app.swingframe.annotation.AnnotationShape
 import app.swingframe.annotation.AnnotationTool
 import app.swingframe.export.ExportStatus

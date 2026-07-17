@@ -38,6 +38,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import app.swingframe.annotation.AnnotationTool
 import app.swingframe.ui.theme.SwingFrameColors
@@ -54,7 +59,7 @@ private val AnnotationPalette = listOf(
 private val AnnotationStrokeWidths = listOf(2f, 3f, 5f, 8f)
 
 @Composable
-fun AnnotationToolRail(
+fun AnnotationToolBar(
     selectedTool: AnnotationTool,
     enabled: Boolean,
     onSelectTool: (AnnotationTool) -> Unit,
@@ -62,21 +67,28 @@ fun AnnotationToolRail(
 ) {
     val tools = AnnotationTool.entries
     Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(4.dp),
-        color = SwingFrameColors.Panel.copy(alpha = 0.94f),
-        border = androidx.compose.foundation.BorderStroke(1.dp, SwingFrameColors.Stroke),
+        modifier = modifier.fillMaxWidth(),
+        color = SwingFrameColors.Panel,
+        border = androidx.compose.foundation.BorderStroke(1.dp, SwingFrameColors.StrokeSoft),
     ) {
-        Column(
-            modifier = Modifier.padding(3.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            tools.forEach { tool ->
+            items(tools, key = { it.name }) { tool ->
                 val selected = tool == selectedTool
                 Surface(
                     onClick = { onSelectTool(tool) },
                     enabled = enabled,
-                    modifier = Modifier.size(34.dp),
+                    modifier = Modifier
+                        .size(48.dp)
+                        .semantics {
+                            contentDescription = tool.editorLabel
+                            role = Role.Button
+                            this.selected = selected
+                        },
                     shape = RoundedCornerShape(3.dp),
                     color = if (selected) SwingFrameColors.Accent else Color.Transparent,
                 ) {
@@ -96,6 +108,7 @@ fun AnnotationToolRail(
 @Composable
 fun AnnotationActionBar(
     tool: AnnotationTool,
+    enabled: Boolean,
     colorArgb: Int,
     strokeWidthDp: Float,
     overlayVisible: Boolean,
@@ -127,7 +140,7 @@ fun AnnotationActionBar(
     ) {
         Row(
             modifier = Modifier
-                .height(44.dp)
+                .height(52.dp)
                 .padding(horizontal = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -150,6 +163,7 @@ fun AnnotationActionBar(
                 item {
                     CompactAction(
                         label = "Color",
+                        enabled = enabled,
                         onClick = { onSetColor(nextColor) },
                     ) {
                         Box(
@@ -161,7 +175,11 @@ fun AnnotationActionBar(
                     }
                 }
                 item {
-                    CompactAction(label = "${strokeWidthDp.toInt()} pt", onClick = { onSetStrokeWidth(nextStroke) }) {
+                    CompactAction(
+                        label = "${strokeWidthDp.toInt()} pt",
+                        enabled = enabled,
+                        onClick = { onSetStrokeWidth(nextStroke) },
+                    ) {
                         Canvas(Modifier.size(17.dp)) {
                             drawLine(
                                 color = SwingFrameColors.TextPrimary,
@@ -174,7 +192,11 @@ fun AnnotationActionBar(
                     }
                 }
                 item {
-                    CompactAction(label = if (overlayVisible) "Hide" else "Show", onClick = onToggleOverlay) {
+                    CompactAction(
+                        label = if (overlayVisible) "Hide" else "Show",
+                        enabled = enabled,
+                        onClick = onToggleOverlay,
+                    ) {
                         Icon(
                             if (overlayVisible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
                             contentDescription = null,
@@ -186,6 +208,7 @@ fun AnnotationActionBar(
                 item {
                     CompactAction(
                         label = "Carry",
+                        enabled = enabled,
                         active = carryForward,
                         onClick = onToggleCarryForward,
                     ) {
@@ -198,22 +221,22 @@ fun AnnotationActionBar(
                     }
                 }
                 item {
-                    CompactAction(label = "Undo", enabled = canUndo, onClick = onUndo) {
+                    CompactAction(label = "Undo", enabled = enabled && canUndo, onClick = onUndo) {
                         Icon(Icons.Filled.Undo, null, modifier = Modifier.size(17.dp))
                     }
                 }
                 item {
-                    CompactAction(label = "Redo", enabled = canRedo, onClick = onRedo) {
+                    CompactAction(label = "Redo", enabled = enabled && canRedo, onClick = onRedo) {
                         Icon(Icons.Filled.Redo, null, modifier = Modifier.size(17.dp))
                     }
                 }
                 item {
-                    CompactAction(label = "Delete", enabled = hasSelection, onClick = onDelete) {
+                    CompactAction(label = "Delete", enabled = enabled && hasSelection, onClick = onDelete) {
                         Icon(Icons.Filled.DeleteOutline, null, modifier = Modifier.size(17.dp))
                     }
                 }
                 item {
-                    CompactAction(label = "Clear", enabled = hasAnnotations, onClick = onClear) {
+                    CompactAction(label = "Clear", enabled = enabled && hasAnnotations, onClick = onClear) {
                         Icon(Icons.Filled.LayersClear, null, modifier = Modifier.size(17.dp))
                     }
                 }
@@ -238,7 +261,7 @@ private fun CompactAction(
     ) {
         Column(
             modifier = Modifier
-                .width(42.dp)
+                .width(48.dp)
                 .padding(vertical = 4.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {

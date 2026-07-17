@@ -2,6 +2,7 @@ package app.swingframe.media
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.os.SystemClock
 import app.swingframe.data.BitmapFrameCache
 import app.swingframe.data.Media3FrameDecoder
 import app.swingframe.data.TimelineThumbnailLoader
@@ -36,7 +37,7 @@ data class MediaSessionState(
 class MediaSessionController(
     context: Context,
     private val scope: CoroutineScope,
-) {
+) : AutoCloseable {
     private val appContext = context.applicationContext
     private val thumbnailLoader = TimelineThumbnailLoader(appContext)
     private val cache = BitmapFrameCache(appContext)
@@ -91,6 +92,12 @@ class MediaSessionController(
         if (_state.value.isPlaying) stopPlayback() else startPlayback(speed)
     }
 
+    fun updatePlaybackSpeed(speed: Float) {
+        if (!_state.value.isPlaying) return
+        stopPlayback()
+        startPlayback(speed)
+    }
+
     fun stopPlayback() {
         playbackJob?.cancel()
         playbackJob = null
@@ -130,6 +137,11 @@ class MediaSessionController(
         if (clearState) _state.value = MediaSessionState()
     }
 
+    override fun close() {
+        release()
+        cache.close()
+    }
+
     private fun startWorker(video: IndexedVideo) {
         workerJob?.cancel()
         drainRequests()
@@ -163,11 +175,10 @@ class MediaSessionController(
                     }
                 }
                 for (neighbor in neighbors) {
-                    val pending = requests.tryReceive().getOrNull()
-                    if (pending != null || _state.value.requestedFrameIndex != requested) {
-                        if (pending != null) requests.trySend(pending)
-                        continue@requestLoop
-                    }
+                    // request() updates state before sending to the conflated channel. Checking that
+                    // state interrupts prefetch without consuming and re-sending an older request,
+                    // which could overwrite a newer seek in the conflated slot.
+                    if (_state.value.requestedFrameIndex != requested) continue@requestLoop
                     if (neighbor in 0 until video.totalFrames && cache[neighbor] == null) {
                         load(video, neighbor, reportFailure = false)
                     }
@@ -231,23 +242,40 @@ class MediaSessionController(
                 index = 0
                 request(index, stopPlayback = false)
             }
+            val initialResolved = awaitCachedFrame(index)
+            if (!initialResolved) {
+                _state.update { it.copy(isPlaying = false) }
+                return@launch
+            }
+
             _state.update { it.copy(isPlaying = true) }
             while (isActive && index < video.totalFrames - 1) {
                 val next = index + 1
                 val deltaUs = (video.frameTimestampsUs[next] - video.frameTimestampsUs[index])
                     .coerceAtLeast(1_000L)
-                delay((deltaUs / 1_000f / speed.coerceIn(0.1f, 1f)).roundToLong().coerceAtLeast(4L))
+                val frameDurationMs = (deltaUs / 1_000f / speed.coerceIn(0.1f, 1f))
+                    .roundToLong()
+                    .coerceAtLeast(4L)
+                val displayAtMs = SystemClock.elapsedRealtime() + frameDurationMs
+                delay((displayAtMs - SystemClock.elapsedRealtime()).coerceAtLeast(1L))
+
                 index = next
                 request(index, stopPlayback = false)
-                val resolved = withTimeoutOrNull(FRAME_TIMEOUT_MS) {
-                    while (isActive && cache[index] == null && _state.value.errorMessage == null) delay(4L)
-                    cache[index] != null
-                } ?: false
-                if (!resolved) break
+                // Directional prefetch normally makes this immediate. If decoding is late, wait
+                // only for the unresolved remainder instead of adding decode time every frame.
+                if (!awaitCachedFrame(index)) break
             }
             _state.update { it.copy(isPlaying = false) }
         }
     }
+
+    private suspend fun awaitCachedFrame(frameIndex: Int): Boolean =
+        withTimeoutOrNull(FRAME_TIMEOUT_MS) {
+            while (isActive && cache[frameIndex] == null && _state.value.errorMessage == null) {
+                delay(4L)
+            }
+            cache[frameIndex] != null
+        } ?: false
 
     private fun drainRequests() {
         while (requests.tryReceive().isSuccess) Unit

@@ -4,7 +4,8 @@
     <!-- Intentionally no INTERNET permission. Video access is granted by the system picker. -->
     <application
         android:allowBackup="false"
-        android:icon="@drawable/ic_launcher"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:label="SwingFrame"
         android:supportsRtl="true"
         android:theme="@style/Theme.SwingFrame">

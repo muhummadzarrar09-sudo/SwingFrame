@@ -1,6 +1,8 @@
 # SwingFrame
 
-A personal, fully offline Android golf-analysis workspace. The current test-candidate source is **0.5.1-hardening**: exact-frame media, editorial performance, vector annotations, local projects/bookmarks, export, frame-identity safety, source fingerprints, and controller separation.
+A personal, fully offline Android golf-analysis workspace. The current source is a **0.5.1-hardening development test candidate**: exact-frame media, editorial performance, vector annotations, local projects/bookmarks, export, frame-identity safety, source fingerprints, and controller separation.
+
+> **Validation status:** this is not a production release. Compiler/device/codec/export validation and release hardening are still required. Start with the [July 2026 engineering audit](docs/ENGINEERING_AUDIT_2026-07-17.md), then use the [next-chat handoff](docs/NEXT_CHAT_HANDOFF.md), [device smoke checklist](docs/DEVICE_SMOKE_CHECKLIST.md), and [codec test matrix](docs/TEST_MATRIX.md).
 
 ## Phase 1 included
 
@@ -61,7 +63,7 @@ See [`docs/WINDOWS_BUILD.md`](docs/WINDOWS_BUILD.md) for manual commands and tro
 Set `ANDROID_SDK_ROOT` (or create `local.properties` with `sdk.dir=...`) and use JDK 17:
 
 ```bash
-./gradlew testDebugUnitTest assembleDebug
+./gradlew testDebugUnitTest lintDebug assembleDebug
 mkdir -p artifacts
 cp app/build/outputs/apk/debug/app-debug.apk artifacts/SwingFrame.apk
 ```

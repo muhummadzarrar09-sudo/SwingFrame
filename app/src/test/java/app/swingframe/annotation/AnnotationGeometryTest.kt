@@ -19,6 +19,17 @@ class AnnotationGeometryTest {
     }
 
     @Test
+    fun angleDegrees_usesPixelAspectRatio() {
+        val angle = AngleAnnotation(
+            vertex = NormalizedPoint(0.1f, 0.1f),
+            armA = NormalizedPoint(0.2f, 0.2f),
+            armB = NormalizedPoint(0.1f, 0.2f),
+            style = style,
+        )
+        assertEquals(63.435f, angle.angleDegrees(pixelWidth = 2f, pixelHeight = 1f), 0.01f)
+    }
+
+    @Test
     fun lineHandle_replacesRequestedEndpoint() {
         val line = LineAnnotation(
             start = NormalizedPoint(0.1f, 0.1f),

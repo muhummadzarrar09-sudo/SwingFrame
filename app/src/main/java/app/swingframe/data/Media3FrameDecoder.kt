@@ -43,7 +43,7 @@ class Media3FrameDecoder(
             extractor.getFrame(positionMs).await().bitmap
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (hardwareFailure: Throwable) {
+        } catch (hardwareFailure: Exception) {
             if (usingSoftwareFallback) throw hardwareFailure
             switchToSoftwareFallback()
             extractor.getFrame(positionMs).await().bitmap
@@ -80,12 +80,16 @@ class Media3FrameDecoder(
         val longest = maxOf(width, height)
         if (longest <= maxEdge || longest <= 0) return this
         val ratio = maxEdge.toFloat() / longest.toFloat()
-        return Bitmap.createScaledBitmap(
+        val scaled = Bitmap.createScaledBitmap(
             this,
             (width * ratio).roundToInt().coerceAtLeast(1),
             (height * ratio).roundToInt().coerceAtLeast(1),
             true,
         )
+        // createScaledBitmap allocates a second pixel buffer. FrameExtractor transfers ownership
+        // of the source bitmap to us, so retaining both makes repeated 4K seeks spike memory.
+        if (scaled !== this && !isRecycled) recycle()
+        return scaled
     }
 
     private companion object {

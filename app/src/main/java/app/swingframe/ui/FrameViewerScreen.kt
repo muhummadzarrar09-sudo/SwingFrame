@@ -28,11 +28,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SaveAlt
@@ -40,6 +42,8 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -66,9 +70,16 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import app.swingframe.annotation.AnnotationShape
 import app.swingframe.annotation.AnnotationStyle
@@ -123,6 +134,7 @@ fun FrameViewerScreen(
     var scale by remember(video.source.uri) { mutableFloatStateOf(1f) }
     var panX by remember(video.source.uri) { mutableFloatStateOf(0f) }
     var panY by remember(video.source.uri) { mutableFloatStateOf(0f) }
+    var stageSize by remember(video.source.uri) { mutableStateOf(IntSize.Zero) }
     val timestampUs = video.frameTimestampsUs.getOrElse(state.currentFrameIndex) { 0L }
     val frameContentReady = state.resolvedFrameIndex == state.currentFrameIndex && state.currentBitmap != null
 
@@ -131,91 +143,94 @@ fun FrameViewerScreen(
             .fillMaxSize()
             .background(SwingFrameColors.Background),
     ) {
-        FrameStage(
-            bitmap = state.currentBitmap,
-            scale = scale,
-            panX = panX,
-            panY = panY,
-            onTransform = { zoomChange, panChange ->
-                val nextScale = (scale * zoomChange).coerceIn(1f, 6f)
-                scale = nextScale
-                if (nextScale <= 1.01f) {
+        Column(Modifier.fillMaxSize()) {
+            EditorHeader(
+                title = video.source.displayName,
+                frameIndex = state.currentFrameIndex,
+                totalFrames = video.totalFrames,
+                timestamp = formatTimestampUs(timestampUs),
+                fps = formatFps(video.detectedFps),
+                variableRate = video.isVariableFrameRate,
+                zoomed = scale > 1.01f,
+                onBack = onBack,
+                onImportAnother = onImportAnother,
+                onExport = { showExportSetup = true },
+                onInfo = { showInfo = true },
+                onAddBookmark = { showAddBookmark = true },
+                onOpenBookmarks = { showBookmarkList = true },
+                onResetZoom = {
+                    scale = 1f
                     panX = 0f
                     panY = 0f
-                } else {
-                    panX += panChange.x
-                    panY += panChange.y
+                },
+            )
+
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                FrameStage(
+                    bitmap = state.currentBitmap,
+                    scale = scale,
+                    panX = panX,
+                    panY = panY,
+                    onTransform = { zoomChange, panChange ->
+                        val nextScale = (scale * zoomChange).coerceIn(1f, 6f)
+                        scale = nextScale
+                        if (nextScale <= 1.01f) {
+                            panX = 0f
+                            panY = 0f
+                        } else {
+                            val maxPanX = stageSize.width * (nextScale - 1f) / 2f
+                            val maxPanY = stageSize.height * (nextScale - 1f) / 2f
+                            panX = (panX + panChange.x).coerceIn(-maxPanX, maxPanX)
+                            panY = (panY + panChange.y).coerceIn(-maxPanY, maxPanY)
+                        }
+                    },
+                    onResetZoom = {
+                        scale = 1f
+                        panX = 0f
+                        panY = 0f
+                    },
+                    frameIndex = state.currentFrameIndex,
+                    annotations = if (frameContentReady) state.currentFrameAnnotations else emptyList(),
+                    carriedAnnotations = if (frameContentReady) state.carriedAnnotations else emptyList(),
+                    selectedAnnotationId = if (frameContentReady) state.selectedAnnotationId else null,
+                    annotationTool = state.annotationTool,
+                    annotationStyle = AnnotationStyle(
+                        colorArgb = state.annotationColorArgb,
+                        strokeWidthDp = state.annotationStrokeWidthDp,
+                    ),
+                    annotationOverlayVisible = state.annotationOverlayVisible && frameContentReady,
+                    onSelectAnnotation = onSelectAnnotation,
+                    onAddAnnotation = onAddAnnotation,
+                    onReplaceAnnotation = onReplaceAnnotation,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .onSizeChanged { stageSize = it },
+                )
+
+                AnimatedVisibility(
+                    visible = state.isFrameLoading,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(12.dp),
+                ) {
+                    FrameResolvingBadge()
                 }
-            },
-            onResetZoom = {
-                scale = 1f
-                panX = 0f
-                panY = 0f
-            },
-            frameIndex = state.currentFrameIndex,
-            annotations = if (frameContentReady) state.currentFrameAnnotations else emptyList(),
-            carriedAnnotations = if (frameContentReady) state.carriedAnnotations else emptyList(),
-            selectedAnnotationId = if (frameContentReady) state.selectedAnnotationId else null,
-            annotationTool = state.annotationTool,
-            annotationStyle = AnnotationStyle(
-                colorArgb = state.annotationColorArgb,
-                strokeWidthDp = state.annotationStrokeWidthDp,
-            ),
-            annotationOverlayVisible = state.annotationOverlayVisible && frameContentReady,
-            onSelectAnnotation = onSelectAnnotation,
-            onAddAnnotation = onAddAnnotation,
-            onReplaceAnnotation = onReplaceAnnotation,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(top = 113.dp, bottom = 194.dp, start = 12.dp, end = 12.dp),
-        )
+            }
 
-        EditorHeader(
-            title = video.source.displayName,
-            frameIndex = state.currentFrameIndex,
-            totalFrames = video.totalFrames,
-            timestamp = formatTimestampUs(timestampUs),
-            fps = formatFps(video.detectedFps),
-            variableRate = video.isVariableFrameRate,
-            zoomed = scale > 1.01f,
-            onBack = onBack,
-            onImportAnother = onImportAnother,
-            onExport = { showExportSetup = true },
-            onInfo = { showInfo = true },
-            onResetZoom = {
-                scale = 1f
-                panX = 0f
-                panY = 0f
-            },
-            modifier = Modifier.align(Alignment.TopCenter),
-        )
+            AnnotationToolBar(
+                selectedTool = state.annotationTool,
+                enabled = state.annotationOverlayVisible && frameContentReady,
+                onSelectTool = onSelectAnnotationTool,
+            )
 
-        AnimatedVisibility(
-            visible = state.isFrameLoading,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 125.dp, end = 24.dp),
-        ) {
-            FrameResolvingBadge()
-        }
-
-        AnnotationToolRail(
-            selectedTool = state.annotationTool,
-            enabled = state.annotationOverlayVisible && frameContentReady,
-            onSelectTool = onSelectAnnotationTool,
-            modifier = Modifier
-                .align(Alignment.CenterStart)
-                .padding(start = 18.dp, bottom = 34.dp),
-        )
-
-        AnimatedVisibility(
-            visible = frameContentReady,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(start = 52.dp, end = 12.dp, bottom = 198.dp),
-        ) {
             AnnotationActionBar(
                 tool = state.annotationTool,
+                enabled = frameContentReady,
                 colorArgb = state.annotationColorArgb,
                 strokeWidthDp = state.annotationStrokeWidthDp,
                 overlayVisible = state.annotationOverlayVisible,
@@ -232,26 +247,22 @@ fun FrameViewerScreen(
                 onRedo = onRedoAnnotation,
                 onDelete = onDeleteSelectedAnnotation,
                 onClear = onClearCurrentFrameAnnotations,
-                modifier = Modifier.fillMaxWidth(),
+            )
+
+            TimelineDock(
+                thumbnails = state.timelineThumbnails,
+                bookmarks = state.bookmarks,
+                frameIndex = state.currentFrameIndex,
+                totalFrames = video.totalFrames,
+                timestamp = formatTimestampUs(timestampUs),
+                isPlaying = state.isPlaying,
+                speed = state.playbackSpeed,
+                onSeek = onSeek,
+                onStep = onStep,
+                onTogglePlayback = onTogglePlayback,
+                onSpeedChange = onSpeedChange,
             )
         }
-
-        TimelineDock(
-            thumbnails = state.timelineThumbnails,
-            bookmarks = state.bookmarks,
-            frameIndex = state.currentFrameIndex,
-            totalFrames = video.totalFrames,
-            timestamp = formatTimestampUs(timestampUs),
-            isPlaying = state.isPlaying,
-            speed = state.playbackSpeed,
-            onSeek = onSeek,
-            onStep = onStep,
-            onTogglePlayback = onTogglePlayback,
-            onSpeedChange = onSpeedChange,
-            onAddBookmark = { showAddBookmark = true },
-            onOpenBookmarks = { showBookmarkList = true },
-            modifier = Modifier.align(Alignment.BottomCenter),
-        )
 
         AnimatedVisibility(
             visible = state.errorMessage != null,
@@ -402,9 +413,12 @@ private fun EditorHeader(
     onImportAnother: () -> Unit,
     onExport: () -> Unit,
     onInfo: () -> Unit,
+    onAddBookmark: () -> Unit,
+    onOpenBookmarks: () -> Unit,
     onResetZoom: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var showMoreMenu by remember { mutableStateOf(false) }
     Surface(
         modifier = modifier.fillMaxWidth(),
         color = SwingFrameColors.Background.copy(alpha = 0.98f),
@@ -437,19 +451,60 @@ private fun EditorHeader(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                AnimatedVisibility(visible = zoomed) {
-                    IconButton(onClick = onResetZoom) {
-                        Icon(Icons.Filled.AspectRatio, "Reset zoom", tint = SwingFrameColors.Accent)
-                    }
-                }
                 IconButton(onClick = onExport) {
                     Icon(Icons.Filled.SaveAlt, "Export analysis", tint = SwingFrameColors.Accent)
                 }
-                IconButton(onClick = onImportAnother) {
-                    Icon(Icons.Filled.FolderOpen, "Open another video", tint = SwingFrameColors.TextSecondary)
-                }
-                IconButton(onClick = onInfo) {
-                    Icon(Icons.Filled.Info, "Source information", tint = SwingFrameColors.TextSecondary)
+                Box {
+                    IconButton(onClick = { showMoreMenu = true }) {
+                        Icon(Icons.Filled.MoreVert, "More actions", tint = SwingFrameColors.TextSecondary)
+                    }
+                    DropdownMenu(
+                        expanded = showMoreMenu,
+                        onDismissRequest = { showMoreMenu = false },
+                    ) {
+                        if (zoomed) {
+                            DropdownMenuItem(
+                                text = { Text("Reset zoom") },
+                                leadingIcon = { Icon(Icons.Filled.AspectRatio, contentDescription = null) },
+                                onClick = {
+                                    showMoreMenu = false
+                                    onResetZoom()
+                                },
+                            )
+                        }
+                        DropdownMenuItem(
+                            text = { Text("Mark current frame") },
+                            leadingIcon = { Icon(Icons.Filled.BookmarkAdd, contentDescription = null) },
+                            onClick = {
+                                showMoreMenu = false
+                                onAddBookmark()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Marked frames") },
+                            leadingIcon = { Icon(Icons.Filled.Bookmarks, contentDescription = null) },
+                            onClick = {
+                                showMoreMenu = false
+                                onOpenBookmarks()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Open another video") },
+                            leadingIcon = { Icon(Icons.Filled.FolderOpen, contentDescription = null) },
+                            onClick = {
+                                showMoreMenu = false
+                                onImportAnother()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Source information") },
+                            leadingIcon = { Icon(Icons.Filled.Info, contentDescription = null) },
+                            onClick = {
+                                showMoreMenu = false
+                                onInfo()
+                            },
+                        )
+                    }
                 }
             }
 
@@ -542,8 +597,6 @@ private fun TimelineDock(
     onStep: (Int) -> Unit,
     onTogglePlayback: () -> Unit,
     onSpeedChange: (Float) -> Unit,
-    onAddBookmark: () -> Unit,
-    onOpenBookmarks: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val currentBookmark = bookmarks.firstOrNull { it.frameIndex == frameIndex }
@@ -576,17 +629,6 @@ private fun TimelineDock(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(timestamp, style = MaterialTheme.typography.labelMedium, color = SwingFrameColors.TextSecondary)
-                IconButton(onClick = onAddBookmark, modifier = Modifier.size(31.dp)) {
-                    Icon(Icons.Filled.BookmarkAdd, "Mark current frame", tint = SwingFrameColors.TextSecondary, modifier = Modifier.size(17.dp))
-                }
-                IconButton(onClick = onOpenBookmarks, modifier = Modifier.size(31.dp)) {
-                    Icon(
-                        Icons.Filled.Bookmarks,
-                        "Open marked frames",
-                        tint = if (bookmarks.isNotEmpty()) SwingFrameColors.Accent else SwingFrameColors.TextMuted,
-                        modifier = Modifier.size(17.dp),
-                    )
-                }
             }
 
             Spacer(Modifier.height(8.dp))
@@ -615,7 +657,7 @@ private fun TimelineDock(
                 Spacer(Modifier.width(6.dp))
                 Surface(
                     onClick = onTogglePlayback,
-                    modifier = Modifier.size(44.dp),
+                    modifier = Modifier.size(48.dp),
                     shape = CircleShape,
                     color = SwingFrameColors.Accent,
                 ) {
@@ -657,6 +699,18 @@ private fun FilmstripScrubber(
 
     Box(
         modifier = modifier
+            .semantics {
+                contentDescription = "Video timeline, frame ${frameIndex + 1} of $safeCount"
+                progressBarRangeInfo = ProgressBarRangeInfo(
+                    current = frameIndex.toFloat(),
+                    range = 0f..(safeCount - 1).coerceAtLeast(0).toFloat(),
+                    steps = (safeCount - 2).coerceAtLeast(0),
+                )
+                setProgress { value ->
+                    onFrameChange(value.roundToInt().coerceIn(0, safeCount - 1))
+                    true
+                }
+            }
             .clip(RoundedCornerShape(3.dp))
             .background(SwingFrameColors.Canvas)
             .border(1.dp, SwingFrameColors.Stroke, RoundedCornerShape(3.dp))
@@ -781,7 +835,7 @@ private fun TransportButton(
     Surface(
         onClick = onClick,
         enabled = enabled,
-        modifier = Modifier.size(38.dp),
+        modifier = Modifier.size(48.dp),
         shape = CircleShape,
         color = Color.Transparent,
         border = androidx.compose.foundation.BorderStroke(1.dp, SwingFrameColors.Stroke),
@@ -800,21 +854,36 @@ private fun TransportButton(
 @Composable
 private fun SpeedSelector(selected: Float, onSelect: (Float) -> Unit) {
     val speeds = listOf(0.1f, 0.25f, 0.5f, 1f)
-    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-        speeds.forEach { value ->
-            val active = value == selected
-            Surface(
-                onClick = { onSelect(value) },
-                shape = RoundedCornerShape(3.dp),
-                color = if (active) SwingFrameColors.Accent else Color.Transparent,
-                border = if (active) null else androidx.compose.foundation.BorderStroke(1.dp, SwingFrameColors.StrokeSoft),
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        Surface(
+            onClick = { expanded = true },
+            modifier = Modifier.height(48.dp),
+            shape = RoundedCornerShape(3.dp),
+            color = SwingFrameColors.PanelSoft,
+            border = androidx.compose.foundation.BorderStroke(1.dp, SwingFrameColors.StrokeSoft),
+        ) {
+            Row(
+                modifier = Modifier.padding(start = 12.dp, end = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = if (value == 1f) "1×" else "${value}×",
-                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 7.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (active) SwingFrameColors.OnAccent else SwingFrameColors.TextSecondary,
+                    text = if (selected == 1f) "1×" else "${selected}×",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = SwingFrameColors.TextPrimary,
                     fontWeight = FontWeight.SemiBold,
+                )
+                Icon(Icons.Filled.ArrowDropDown, contentDescription = null, tint = SwingFrameColors.TextSecondary)
+            }
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            speeds.forEach { value ->
+                DropdownMenuItem(
+                    text = { Text(if (value == 1f) "Normal · 1×" else "Slow · ${value}×") },
+                    onClick = {
+                        expanded = false
+                        onSelect(value)
+                    },
                 )
             }
         }

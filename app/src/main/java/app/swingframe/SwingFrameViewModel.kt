@@ -1,6 +1,7 @@
 package app.swingframe
 
 import android.app.Application
+import android.content.Intent
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -25,6 +26,7 @@ import app.swingframe.project.ProjectCompatibility
 import app.swingframe.project.ProjectStore
 import app.swingframe.project.RelinkConflict
 import app.swingframe.project.SourceCompatibility
+import app.swingframe.util.LocalDataCorruptionException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
@@ -38,16 +40,24 @@ import kotlinx.coroutines.launch
 
 @androidx.annotation.OptIn(UnstableApi::class)
 class SwingFrameViewModel(application: Application) : AndroidViewModel(application) {
+    private val _uiState = MutableStateFlow(SwingFrameUiState())
+    val uiState: StateFlow<SwingFrameUiState> = _uiState.asStateFlow()
+
     private val probe = VideoProbe(application)
     private val indexer = FrameIndexer(application)
     private val mediaSession = MediaSessionController(application, viewModelScope)
     private val annotationStore = AnnotationStore(application)
-    private val annotationSession = AnnotationSession(annotationStore, viewModelScope)
+    private val annotationSession = AnnotationSession(
+        store = annotationStore,
+        scope = viewModelScope,
+        onPersistenceError = {
+            _uiState.update { state ->
+                state.copy(errorMessage = "Annotations could not be saved. Check available storage before leaving this project.")
+            }
+        },
+    )
     private val projectStore = ProjectStore(application)
     private val exportManager = ExportManager(application)
-
-    private val _uiState = MutableStateFlow(SwingFrameUiState())
-    val uiState: StateFlow<SwingFrameUiState> = _uiState.asStateFlow()
 
     private var analysisJob: Job? = null
     private var projectSaveJob: Job? = null
@@ -62,10 +72,28 @@ class SwingFrameViewModel(application: Application) : AndroidViewModel(applicati
 
     init {
         viewModelScope.launch {
-            localProjects = projectStore.load()
-            projectIndexLoaded = true
-            projectIndexReady.complete(Unit)
-            _uiState.update { it.copy(recentProjects = localProjects) }
+            var loadError: String? = null
+            try {
+                localProjects = projectStore.load()
+                try {
+                    annotationStore.cleanupOrphans(localProjects.map { Uri.parse(it.sourceUri) })
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    loadError = "Projects loaded, but old private annotation files could not be cleaned up."
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                localProjects = emptyList()
+                loadError = error.message ?: "Local projects could not be loaded."
+            } finally {
+                projectIndexLoaded = true
+                if (!projectIndexReady.isCompleted) projectIndexReady.complete(Unit)
+            }
+            _uiState.update {
+                it.copy(recentProjects = localProjects, errorMessage = loadError ?: it.errorMessage)
+            }
         }
         viewModelScope.launch {
             mediaSession.state.collect { media ->
@@ -119,10 +147,18 @@ class SwingFrameViewModel(application: Application) : AndroidViewModel(applicati
         val conflict = _uiState.value.relinkConflict ?: return
         val project = localProjects.firstOrNull { it.id == conflict.projectId } ?: return
         val source = _uiState.value.source ?: return
+        _uiState.update { it.copy(relinkConflict = null) }
         viewModelScope.launch {
-            finalizeRelink(project, source)
-            _uiState.update { it.copy(relinkConflict = null) }
-            analyzeVideo()
+            try {
+                finalizeRelink(project, source)
+                analyzeVideo()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                pendingRelinkProject = null
+                pendingResumeProject = null
+                _uiState.update { it.copy(errorMessage = error.toUserMessage()) }
+            }
         }
     }
 
@@ -133,11 +169,44 @@ class SwingFrameViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun deleteRecentProject(project: LocalProject) {
+        projectSaveJob?.cancel()
+        projectSaveJob = null
         localProjects = localProjects.filterNot { it.id == project.id }
-        _uiState.update { it.copy(recentProjects = localProjects) }
+        val snapshot = localProjects
+        _uiState.update { it.copy(recentProjects = snapshot) }
         viewModelScope.launch {
-            runCatching { annotationStore.delete(Uri.parse(project.sourceUri)) }
-            runCatching { projectStore.save(localProjects) }
+            try {
+                // Persist the index first. Otherwise a failed index write can resurrect a project
+                // whose annotation file has already been deleted.
+                projectStore.save(snapshot)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                replaceProject(project)
+                _uiState.update {
+                    it.copy(
+                        recentProjects = localProjects,
+                        errorMessage = "SwingFrame could not delete this project from local storage.",
+                    )
+                }
+                return@launch
+            }
+
+            // Annotation files are currently keyed by source URI. A second project can point to
+            // the same URI after relinking, so only remove shared vectors with the final owner.
+            if (snapshot.any { it.sourceUri == project.sourceUri }) return@launch
+            try {
+                annotationStore.delete(Uri.parse(project.sourceUri))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                // The project index is already safely deleted. A leftover app-private vector
+                // file is harmless and may be cleaned by a later maintenance pass.
+                _uiState.update { state ->
+                    state.copy(errorMessage = "Project deleted, but some app-private cleanup could not be completed.")
+                }
+            }
+            releasePersistedReadGrant(Uri.parse(project.sourceUri))
         }
     }
 
@@ -154,15 +223,19 @@ class SwingFrameViewModel(application: Application) : AndroidViewModel(applicati
                 val source = probe.probe(uri)
                 var shouldAutoAnalyze = autoAnalyze
                 val relinkProject = pendingRelinkProject
-                val conflict = if (relinkProject != null &&
-                    ProjectCompatibility.compare(relinkProject, source.metadata.sourceFingerprint) == SourceCompatibility.MISMATCH
+                val compatibilityProject = relinkProject ?: pendingResumeProject
+                val conflict = if (compatibilityProject != null &&
+                    ProjectCompatibility.compare(
+                        compatibilityProject,
+                        source.metadata.sourceFingerprint,
+                    ) == SourceCompatibility.MISMATCH
                 ) {
                     RelinkConflict(
-                        projectId = relinkProject.id,
-                        projectName = relinkProject.displayName,
+                        projectId = compatibilityProject.id,
+                        projectName = compatibilityProject.displayName,
                         replacementUri = source.uri.toString(),
                         replacementName = source.displayName,
-                        expectedFingerprint = relinkProject.sourceFingerprint,
+                        expectedFingerprint = compatibilityProject.sourceFingerprint,
                         actualFingerprint = source.metadata.sourceFingerprint,
                     )
                 } else null
@@ -303,8 +376,14 @@ class SwingFrameViewModel(application: Application) : AndroidViewModel(applicati
         mediaSession.togglePlayback(_uiState.value.playbackSpeed)
     }
 
+    fun pausePlayback() {
+        mediaSession.stopPlayback()
+    }
+
     fun setPlaybackSpeed(speed: Float) {
-        _uiState.update { it.copy(playbackSpeed = speed.coerceIn(0.1f, 1f)) }
+        val safeSpeed = speed.coerceIn(0.1f, 1f)
+        _uiState.update { it.copy(playbackSpeed = safeSpeed) }
+        mediaSession.updatePlaybackSpeed(safeSpeed)
     }
 
     fun addBookmark(label: String) {
@@ -563,6 +642,8 @@ class SwingFrameViewModel(application: Application) : AndroidViewModel(applicati
 
     fun returnToPreview() {
         val source = _uiState.value.source
+        analysisJob?.cancel()
+        analysisJob = null
         annotationSession.close()
         flushProjectsAsync()
         activeProjectId = null
@@ -590,9 +671,22 @@ class SwingFrameViewModel(application: Application) : AndroidViewModel(applicati
 
     private suspend fun finalizeRelink(project: LocalProject, source: app.swingframe.model.VideoSource) {
         val oldUri = Uri.parse(project.sourceUri)
-        if (oldUri != source.uri) annotationStore.migrate(oldUri, source.uri)
+        val newUri = source.uri
+        val newUriText = newUri.toString()
+        val occupiedByAnotherProject = localProjects.any {
+            it.id != project.id && it.sourceUri == newUriText
+        }
+        if (occupiedByAnotherProject) {
+            throw IllegalArgumentException("That source is already attached to another local project.")
+        }
+
+        // Copy vectors before changing metadata, but retain the old copy until the project index is
+        // safely committed. The previous implementation deleted first and could lose the project
+        // after a failed index write.
+        if (oldUri != newUri) annotationStore.copy(oldUri, newUri)
+        val previousProjects = localProjects
         val updated = project.copy(
-            sourceUri = source.uri.toString(),
+            sourceUri = newUriText,
             displayName = source.displayName,
             durationUs = source.metadata.durationUs,
             width = source.metadata.width,
@@ -604,13 +698,41 @@ class SwingFrameViewModel(application: Application) : AndroidViewModel(applicati
             updatedAtEpochMs = System.currentTimeMillis(),
         )
         replaceProject(updated)
-        persistProjectsNow()
+        try {
+            persistProjectsNow()
+        } catch (error: Throwable) {
+            localProjects = previousProjects
+            _uiState.update { it.copy(recentProjects = previousProjects) }
+            throw error
+        }
+
+        if (oldUri != newUri && localProjects.none { it.sourceUri == oldUri.toString() }) {
+            try {
+                annotationStore.delete(oldUri)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                // The committed project points at the safe new copy; stale private data is harmless.
+            }
+            releasePersistedReadGrant(oldUri)
+        }
         pendingResumeProject = updated
         pendingRelinkProject = null
     }
 
     private fun activeProject(): LocalProject? =
         activeProjectId?.let { id -> localProjects.firstOrNull { it.id == id } }
+
+    private fun releasePersistedReadGrant(uri: Uri) {
+        try {
+            getApplication<Application>().contentResolver.releasePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        } catch (_: SecurityException) {
+            // Some providers grant only transient access or have already revoked the grant.
+        }
+    }
 
     private fun replaceProject(project: LocalProject) {
         localProjects = (localProjects.filterNot { it.id == project.id } + project)
@@ -636,7 +758,15 @@ class SwingFrameViewModel(application: Application) : AndroidViewModel(applicati
         projectSaveJob?.cancel()
         projectSaveJob = viewModelScope.launch {
             delay(PROJECT_SAVE_DEBOUNCE_MS)
-            runCatching { projectStore.save(snapshot) }
+            try {
+                projectStore.save(snapshot)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                _uiState.update { state ->
+                    state.copy(errorMessage = "Project progress could not be saved. Check available storage.")
+                }
+            }
         }
     }
 
@@ -652,7 +782,17 @@ class SwingFrameViewModel(application: Application) : AndroidViewModel(applicati
         val snapshot = localProjects
         projectSaveJob?.cancel()
         projectSaveJob = null
-        viewModelScope.launch { runCatching { projectStore.save(snapshot) } }
+        viewModelScope.launch {
+            try {
+                projectStore.save(snapshot)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                _uiState.update { state ->
+                    state.copy(errorMessage = "Project progress could not be saved. Check available storage.")
+                }
+            }
+        }
     }
 
     private fun updateSelectedStyle(transform: (AnnotationStyle) -> AnnotationStyle) {
@@ -704,6 +844,9 @@ class SwingFrameViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun Throwable.toUserMessage(): String {
+        if (this is LocalDataCorruptionException) {
+            return message ?: "Local project data was corrupt and has been quarantined."
+        }
         val root = generateSequence(this) { it.cause }.last()
         return when (root) {
             is SecurityException -> "SwingFrame no longer has permission to read this video. Import it again."
@@ -715,6 +858,7 @@ class SwingFrameViewModel(application: Application) : AndroidViewModel(applicati
 
     override fun onCleared() {
         releaseCurrentVideo()
+        mediaSession.close()
         super.onCleared()
     }
 
