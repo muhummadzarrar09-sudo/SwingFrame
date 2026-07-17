@@ -45,7 +45,7 @@ $env:Path = "$env:JAVA_HOME\bin;$env:ANDROID_SDK_ROOT\platform-tools;$env:Path"
 
 java -version
 .\gradlew.bat --version
-.\gradlew.bat testDebugUnitTest assembleDebug --stacktrace
+.\gradlew.bat testDebugUnitTest lintDebug assembleDebug --stacktrace
 
 New-Item -ItemType Directory -Force artifacts | Out-Null
 Copy-Item -Force .\app\build\outputs\apk\debug\app-debug.apk .\artifacts\SwingFrame.apk

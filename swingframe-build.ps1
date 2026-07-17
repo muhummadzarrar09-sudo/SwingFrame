@@ -212,7 +212,7 @@ zipStorePath=wrapper/dists
 
 Write-Step "Building SwingFrame APK (the first run downloads Gradle and dependencies)..."
 
-& .\gradlew.bat assembleDebug --stacktrace
+& .\gradlew.bat testDebugUnitTest lintDebug assembleDebug --stacktrace
 if ($LASTEXITCODE -ne 0) {
     Write-Fail "Build failed. Copy the first compiler error and the 'What went wrong' section."
 }

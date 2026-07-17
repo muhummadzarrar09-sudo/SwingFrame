@@ -6,6 +6,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -46,6 +48,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -71,12 +76,18 @@ fun HomeScreen(
     onDismissError: () -> Unit,
 ) {
     var pendingDeleteProject by remember { mutableStateOf<LocalProject?>(null) }
+    val emptyStateScroll = if (recentProjects.isEmpty()) {
+        Modifier.verticalScroll(rememberScrollState())
+    } else {
+        Modifier
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(SwingFrameColors.Background)
             .statusBarsPadding()
             .navigationBarsPadding()
+            .then(emptyStateScroll)
             .padding(horizontal = 22.dp),
     ) {
         Spacer(Modifier.height(20.dp))
@@ -225,10 +236,10 @@ private fun RecentProjectRow(
                     )
                 }
             }
-            IconButton(onClick = onRelink, modifier = Modifier.size(38.dp)) {
+            IconButton(onClick = onRelink, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Filled.Link, "Relink source", tint = SwingFrameColors.TextSecondary, modifier = Modifier.size(18.dp))
             }
-            IconButton(onClick = onDelete, modifier = Modifier.size(38.dp)) {
+            IconButton(onClick = onDelete, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Filled.DeleteOutline, "Delete local project", tint = SwingFrameColors.TextMuted, modifier = Modifier.size(18.dp))
             }
         }
@@ -342,6 +353,7 @@ fun ImportPreviewScreen(
         Column(
             modifier = Modifier
                 .weight(1f)
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 22.dp),
         ) {
             Spacer(Modifier.height(16.dp))
@@ -423,7 +435,7 @@ fun ImportPreviewScreen(
                 onClick = onChooseAnother,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(47.dp),
+                    .height(48.dp),
                 shape = RoundedCornerShape(4.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color.Transparent,
@@ -566,6 +578,7 @@ fun ErrorCard(message: String, onDismiss: () -> Unit) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
+            .semantics { liveRegion = LiveRegionMode.Polite }
             .border(1.dp, SwingFrameColors.Error.copy(alpha = 0.45f), RoundedCornerShape(4.dp)),
         shape = RoundedCornerShape(4.dp),
         color = SwingFrameColors.Error.copy(alpha = 0.08f),
@@ -580,7 +593,7 @@ fun ErrorCard(message: String, onDismiss: () -> Unit) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = SwingFrameColors.TextPrimary,
             )
-            IconButton(onClick = onDismiss, modifier = Modifier.size(38.dp)) {
+            IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Filled.Close, "Dismiss", tint = SwingFrameColors.TextSecondary)
             }
         }

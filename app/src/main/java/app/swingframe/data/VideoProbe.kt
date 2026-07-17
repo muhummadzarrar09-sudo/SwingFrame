@@ -28,10 +28,14 @@ class VideoProbe(private val context: Context) {
             val videoFormat = findVideoFormat(extractor)
                 ?: throw IllegalArgumentException("This file does not contain a readable video track.")
 
-            val durationMs = retriever.metadataLong(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                ?: videoFormat.longOrNull(MediaFormat.KEY_DURATION)?.div(1_000L)
+            // MediaFormat exposes microseconds while MediaMetadataRetriever rounds to
+            // milliseconds. Prefer the precise track duration for exact range boundaries.
+            val durationUs = videoFormat.longOrNull(MediaFormat.KEY_DURATION)
+                ?.takeIf { it > 0L }
+                ?: retriever.metadataLong(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                    ?.takeIf { it > 0L }
+                    ?.let { milliseconds -> milliseconds * 1_000L }
                 ?: throw IllegalArgumentException("The video duration could not be read.")
-            val durationUs = durationMs.coerceAtLeast(1L) * 1_000L
 
             val width = retriever.metadataInt(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
                 ?: videoFormat.intOrNull(MediaFormat.KEY_WIDTH)
@@ -39,6 +43,9 @@ class VideoProbe(private val context: Context) {
             val height = retriever.metadataInt(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
                 ?: videoFormat.intOrNull(MediaFormat.KEY_HEIGHT)
                 ?: 0
+            if (width <= 0 || height <= 0) {
+                throw IllegalArgumentException("The video dimensions could not be read.")
+            }
             val rotation = retriever.metadataInt(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION) ?: 0
             val mime = videoFormat.getString(MediaFormat.KEY_MIME) ?: "video/unknown"
 
@@ -57,6 +64,7 @@ class VideoProbe(private val context: Context) {
             val bitrate = retriever.metadataLong(MediaMetadataRetriever.METADATA_KEY_BITRATE)
                 ?: videoFormat.longOrNull(MediaFormat.KEY_BIT_RATE)
             val fingerprint = sourceFingerprint(
+                uri = uri,
                 durationUs = durationUs,
                 width = width,
                 height = height,
@@ -114,6 +122,7 @@ class VideoProbe(private val context: Context) {
     }
 
     private fun sourceFingerprint(
+        uri: Uri,
         durationUs: Long,
         width: Int,
         height: Int,
@@ -131,9 +140,31 @@ class VideoProbe(private val context: Context) {
             frameCount ?: -1,
             sizeBytes ?: -1L,
         ).joinToString("|")
-        return MessageDigest.getInstance("SHA-256")
-            .digest(identity.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
+        val digest = MessageDigest.getInstance("SHA-256")
+        digest.update(identity.toByteArray(Charsets.UTF_8))
+        digest.update(0.toByte())
+
+        var sampledBytes = 0
+        val sampleSucceeded = runCatching {
+            context.contentResolver.openInputStream(uri)?.buffered()?.use { input ->
+                val buffer = ByteArray(FINGERPRINT_BUFFER_SIZE)
+                while (sampledBytes < FINGERPRINT_SAMPLE_BYTES) {
+                    val wanted = minOf(buffer.size, FINGERPRINT_SAMPLE_BYTES - sampledBytes)
+                    val count = input.read(buffer, 0, wanted)
+                    if (count <= 0) break
+                    digest.update(buffer, 0, count)
+                    sampledBytes += count
+                }
+            }
+        }.isSuccess
+        if (!sampleSucceeded || sampledBytes == 0) {
+            sampledBytes = 0
+            digest.reset()
+            digest.update(identity.toByteArray(Charsets.UTF_8))
+        }
+        val prefix = if (sampledBytes > 0) "v2" else "v2-metadata"
+        val value = digest.digest().joinToString("") { "%02x".format(it) }
+        return "$prefix:$value"
     }
 
     private fun findVideoFormat(extractor: MediaExtractor): MediaFormat? {
@@ -170,5 +201,10 @@ class VideoProbe(private val context: Context) {
         "video/mp4v-es" -> "MPEG-4 Visual"
         "video/3gpp" -> "H.263"
         else -> mime.substringAfter('/').uppercase()
+    }
+
+    private companion object {
+        const val FINGERPRINT_BUFFER_SIZE = 32 * 1_024
+        const val FINGERPRINT_SAMPLE_BYTES = 256 * 1_024
     }
 }

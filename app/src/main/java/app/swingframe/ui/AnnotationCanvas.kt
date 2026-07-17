@@ -40,7 +40,6 @@ import app.swingframe.annotation.handles
 import app.swingframe.annotation.translated
 import app.swingframe.annotation.withHandle
 import app.swingframe.ui.theme.SwingFrameColors
-import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
@@ -210,9 +209,13 @@ fun AnnotationCanvas(
                     is CircleAnnotation -> active.copy(cornerB = current)
                     is FreehandAnnotation -> {
                         val previous = active.points.lastOrNull()
-                        if (previous == null || imageRect.pixelDistance(previous, change.position) >= FREEHAND_STEP_DP.dp.toPx()) {
+                        val farEnough = previous == null ||
+                            imageRect.pixelDistance(previous, change.position) >= FREEHAND_STEP_DP.dp.toPx()
+                        if (farEnough && active.points.size < MAX_FREEHAND_POINTS) {
                             active.copy(points = active.points + current)
-                        } else active
+                        } else {
+                            active
+                        }
                     }
                     else -> active
                 }
@@ -253,7 +256,12 @@ fun AnnotationCanvas(
                 }
 
                 else -> {
-                    if (completed != null && shapeIsLargeEnough(completed, imageRect)) {
+                    if (completed != null && shapeIsLargeEnough(
+                            completed,
+                            imageRect,
+                            MIN_SHAPE_SIZE_DP.dp.toPx(),
+                        )
+                    ) {
                         onAdd(completed)
                         onSelect(completed.id)
                     }
@@ -274,8 +282,8 @@ fun AnnotationCanvas(
             val rendered = if (shape.id == draftId) draft ?: shape else shape
             drawAnnotation(rendered, imageRect, alpha = 1f, angleTextPaint = angleTextPaint)
         }
-        if (draft != null && annotations.none { it.id == draftId }) {
-            drawAnnotation(draft!!, imageRect, alpha = 1f, angleTextPaint = angleTextPaint)
+        draft?.takeIf { candidate -> annotations.none { it.id == candidate.id } }?.let { candidate ->
+            drawAnnotation(candidate, imageRect, alpha = 1f, angleTextPaint = angleTextPaint)
         }
 
         val selected = draft?.takeIf { it.id == selectedAnnotationId }
@@ -314,7 +322,7 @@ private fun DrawScope.drawAnnotation(
             )
             angleTextPaint.textSize = 13.dp.toPx()
             drawContext.canvas.nativeCanvas.drawText(
-                "${shape.angleDegrees().roundToInt()}°",
+                "${shape.angleDegrees(imageRect.width, imageRect.height).roundToInt()}°",
                 vertex.x + 9.dp.toPx(),
                 vertex.y - 9.dp.toPx(),
                 angleTextPaint,
@@ -382,12 +390,16 @@ private fun DrawScope.drawSelectionHandles(shape: AnnotationShape, imageRect: Re
     }
 }
 
-private fun shapeIsLargeEnough(shape: AnnotationShape, imageRect: Rect): Boolean = when (shape) {
-    is LineAnnotation -> imageRect.pixelDistance(shape.start, imageRect.toOffset(shape.end)) >= MIN_SHAPE_SIZE_DP
+private fun shapeIsLargeEnough(
+    shape: AnnotationShape,
+    imageRect: Rect,
+    minimumSizePx: Float,
+): Boolean = when (shape) {
+    is LineAnnotation -> imageRect.pixelDistance(shape.start, imageRect.toOffset(shape.end)) >= minimumSizePx
     is AngleAnnotation -> true
     is PlumbAnnotation -> true
-    is BoxAnnotation -> imageRect.pixelDistance(shape.cornerA, imageRect.toOffset(shape.cornerB)) >= MIN_SHAPE_SIZE_DP
-    is CircleAnnotation -> imageRect.pixelDistance(shape.cornerA, imageRect.toOffset(shape.cornerB)) >= MIN_SHAPE_SIZE_DP
+    is BoxAnnotation -> imageRect.pixelDistance(shape.cornerA, imageRect.toOffset(shape.cornerB)) >= minimumSizePx
+    is CircleAnnotation -> imageRect.pixelDistance(shape.cornerA, imageRect.toOffset(shape.cornerB)) >= minimumSizePx
     is FreehandAnnotation -> shape.points.size >= 2
 }
 
@@ -432,5 +444,6 @@ private fun Rect.pixelDistance(point: NormalizedPoint, offset: Offset): Float {
 private const val HANDLE_HIT_RADIUS_DP = 18f
 private const val SHAPE_HIT_RADIUS_DP = 12f
 private const val DRAG_SLOP_DP = 3f
-private const val FREEHAND_STEP_DP = 2f
+private const val FREEHAND_STEP_DP = 3f
+private const val MAX_FREEHAND_POINTS = 1_500
 private const val MIN_SHAPE_SIZE_DP = 8f

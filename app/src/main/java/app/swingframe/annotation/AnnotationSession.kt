@@ -1,6 +1,7 @@
 package app.swingframe.annotation
 
 import android.net.Uri
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -17,6 +18,7 @@ data class AnnotationFrameSnapshot(
 class AnnotationSession(
     private val store: AnnotationStore,
     private val scope: CoroutineScope,
+    private val onPersistenceError: (Throwable) -> Unit = {},
 ) {
     private val byFrame = mutableMapOf<Int, MutableList<AnnotationShape>>()
     private val undo = mutableMapOf<Int, ArrayDeque<List<AnnotationShape>>>()
@@ -110,6 +112,13 @@ class AnnotationSession(
     }
 
     private fun pushUndo(frameIndex: Int, snapshot: List<AnnotationShape>) {
+        if (frameIndex !in undo && undo.size >= MAX_HISTORY_FRAMES) {
+            val oldestFrame = undo.keys.firstOrNull()
+            if (oldestFrame != null) {
+                undo.remove(oldestFrame)
+                redo.remove(oldestFrame)
+            }
+        }
         val stack = undo.getOrPut(frameIndex) { ArrayDeque() }
         if (stack.size >= HISTORY_LIMIT) stack.removeFirst()
         stack.addLast(snapshot)
@@ -129,7 +138,13 @@ class AnnotationSession(
         saveJob?.cancel()
         saveJob = scope.launch {
             delay(SAVE_DEBOUNCE_MS)
-            runCatching { store.save(uri, data) }
+            try {
+                store.save(uri, data)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                onPersistenceError(error)
+            }
         }
     }
 
@@ -138,11 +153,20 @@ class AnnotationSession(
         val data = allFrames()
         saveJob?.cancel()
         saveJob = null
-        scope.launch { runCatching { store.save(uri, data) } }
+        scope.launch {
+            try {
+                store.save(uri, data)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                onPersistenceError(error)
+            }
+        }
     }
 
     private companion object {
         const val HISTORY_LIMIT = 50
+        const val MAX_HISTORY_FRAMES = 24
         const val CARRY_RADIUS = 3
         const val SAVE_DEBOUNCE_MS = 120L
     }

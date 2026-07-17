@@ -1,6 +1,7 @@
 package app.swingframe.ui
 
 import android.content.Intent
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
@@ -9,6 +10,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.swingframe.SwingFrameViewModel
 import app.swingframe.model.AppStage
@@ -18,6 +21,9 @@ import app.swingframe.project.LocalProject
 fun SwingFrameApp(viewModel: SwingFrameViewModel) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        viewModel.pausePlayback()
+    }
     var pendingRelinkProject by remember { mutableStateOf<LocalProject?>(null) }
     val picker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -45,6 +51,15 @@ fun SwingFrameApp(viewModel: SwingFrameViewModel) {
     val relinkVideo: (LocalProject) -> Unit = { project ->
         pendingRelinkProject = project
         picker.launch(arrayOf("video/*"))
+    }
+
+    BackHandler(enabled = state.stage != AppStage.HOME && state.relinkConflict == null) {
+        when (state.stage) {
+            AppStage.HOME -> Unit
+            AppStage.PROBING -> viewModel.returnHome()
+            AppStage.PREVIEW -> viewModel.returnHome()
+            AppStage.INDEXING, AppStage.VIEWER -> viewModel.returnToPreview()
+        }
     }
 
     when (state.stage) {

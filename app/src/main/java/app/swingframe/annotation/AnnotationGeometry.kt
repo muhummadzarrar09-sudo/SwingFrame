@@ -138,11 +138,16 @@ fun AnnotationShape.distanceTo(
     }.minOrNull() ?: Float.MAX_VALUE
 }
 
-fun AngleAnnotation.angleDegrees(): Float {
-    val ax = armA.x - vertex.x
-    val ay = armA.y - vertex.y
-    val bx = armB.x - vertex.x
-    val by = armB.y - vertex.y
+fun AngleAnnotation.angleDegrees(
+    pixelWidth: Float = 1f,
+    pixelHeight: Float = 1f,
+): Float {
+    // Normalized coordinates only preserve angles on a square canvas. Measure in pixel space so
+    // a diagonal on a 16:9 source is not reported as though the source were 1:1.
+    val ax = (armA.x - vertex.x) * pixelWidth
+    val ay = (armA.y - vertex.y) * pixelHeight
+    val bx = (armB.x - vertex.x) * pixelWidth
+    val by = (armB.y - vertex.y) * pixelHeight
     val lengthA = sqrt(ax * ax + ay * ay)
     val lengthB = sqrt(bx * bx + by * by)
     if (lengthA < 0.0001f || lengthB < 0.0001f) return 0f

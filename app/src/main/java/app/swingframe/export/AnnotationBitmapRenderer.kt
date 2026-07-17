@@ -16,7 +16,6 @@ import app.swingframe.annotation.NormalizedPoint
 import app.swingframe.annotation.PlumbAnnotation
 import app.swingframe.annotation.PlumbOrientation
 import app.swingframe.annotation.angleDegrees
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -77,7 +76,12 @@ object AnnotationBitmapRenderer {
                 paint.style = Paint.Style.FILL
                 paint.textSize = 28f * scale
                 paint.typeface = android.graphics.Typeface.DEFAULT_BOLD
-                canvas.drawText("${shape.angleDegrees().toInt()}°", vx + 12f * scale, vy - 12f * scale, paint)
+                canvas.drawText(
+                    "${shape.angleDegrees(width.toFloat(), height.toFloat()).toInt()}°",
+                    vx + 12f * scale,
+                    vy - 12f * scale,
+                    paint,
+                )
             }
             is PlumbAnnotation -> {
                 if (shape.orientation == PlumbOrientation.VERTICAL) {

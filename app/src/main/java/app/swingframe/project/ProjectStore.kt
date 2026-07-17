@@ -3,6 +3,10 @@ package app.swingframe.project
 import android.content.Context
 import android.util.AtomicFile
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import app.swingframe.util.LocalDataCorruptionException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -13,35 +17,53 @@ class ProjectStore(context: Context) {
     private val indexFile = File(context.filesDir, "projects/index.json").apply {
         parentFile?.mkdirs()
     }
+    private val ioMutex = Mutex()
 
     suspend fun load(): List<LocalProject> = withContext(Dispatchers.IO) {
-        if (!indexFile.exists()) return@withContext emptyList()
-        runCatching {
-            val text = AtomicFile(indexFile).openRead().bufferedReader(Charsets.UTF_8).use { it.readText() }
-            val root = JSONObject(text)
-            root.optJSONArray("projects").toProjects()
-        }.getOrDefault(emptyList())
+        ioMutex.withLock {
+            if (!indexFile.exists()) return@withLock emptyList()
+            try {
+                val text = AtomicFile(indexFile).openRead().bufferedReader(Charsets.UTF_8).use { it.readText() }
+                val root = JSONObject(text)
+                val version = root.optInt("version", 1)
+                require(version in 1..FORMAT_VERSION) { "Unsupported project index version $version." }
+                val array = root.optJSONArray("projects") ?: JSONArray()
+                val projects = array.toProjects()
+                check(projects.size == array.length()) { "One or more local project records are corrupt." }
+                projects
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                val quarantined = quarantineCorruptIndex()
+                throw LocalDataCorruptionException(
+                    "The local project index was corrupt and was moved to ${quarantined.name}.",
+                    error,
+                )
+            }
+        }
     }
 
     suspend fun save(projects: List<LocalProject>) = withContext(Dispatchers.IO) {
-        val root = JSONObject()
-            .put("version", FORMAT_VERSION)
-            .put(
-                "projects",
-                JSONArray().apply {
-                    projects.sortedByDescending { it.updatedAtEpochMs }.forEach { put(encodeProject(it)) }
-                },
-            )
+        ioMutex.withLock {
+            val root = JSONObject()
+                .put("version", FORMAT_VERSION)
+                .put(
+                    "projects",
+                    JSONArray().apply {
+                        projects.sortedByDescending { it.updatedAtEpochMs }.forEach { put(encodeProject(it)) }
+                    },
+                )
 
-        val atomicFile = AtomicFile(indexFile)
-        val output = atomicFile.startWrite()
-        try {
-            output.write(root.toString().toByteArray(Charsets.UTF_8))
-            output.flush()
-            atomicFile.finishWrite(output)
-        } catch (error: Throwable) {
-            atomicFile.failWrite(output)
-            throw error
+            val atomicFile = AtomicFile(indexFile)
+            val output = atomicFile.startWrite()
+            try {
+                output.write(root.toString().toByteArray(Charsets.UTF_8))
+                output.flush()
+                atomicFile.finishWrite(output)
+            } catch (error: Throwable) {
+                atomicFile.failWrite(output)
+                throw error
+            }
         }
     }
 
@@ -83,6 +105,11 @@ class ProjectStore(context: Context) {
     private fun decodeProject(json: JSONObject?): LocalProject? {
         json ?: return null
         return runCatching {
+            val bookmarkArray = json.optJSONArray("bookmarks")
+            val bookmarks = bookmarkArray.toBookmarks()
+            check(bookmarkArray == null || bookmarks.size == bookmarkArray.length()) {
+                "One or more bookmark records are corrupt."
+            }
             LocalProject(
                 id = json.getString("id"),
                 sourceUri = json.getString("sourceUri"),
@@ -98,7 +125,7 @@ class ProjectStore(context: Context) {
                 lastFrameIndex = json.optInt("lastFrameIndex", 0),
                 createdAtEpochMs = json.getLong("createdAtEpochMs"),
                 updatedAtEpochMs = json.getLong("updatedAtEpochMs"),
-                bookmarks = json.optJSONArray("bookmarks").toBookmarks(),
+                bookmarks = bookmarks,
             )
         }.getOrNull()
     }
@@ -118,6 +145,18 @@ class ProjectStore(context: Context) {
                 }.getOrNull()?.let(::add)
             }
         }.sortedBy { it.frameIndex }
+    }
+
+    private fun quarantineCorruptIndex(): File {
+        val quarantined = File(
+            indexFile.parentFile,
+            "index.corrupt-${System.currentTimeMillis()}.json",
+        )
+        if (!indexFile.renameTo(quarantined)) {
+            // Keep the original in place when the filesystem refuses the rename.
+            return indexFile
+        }
+        return quarantined
     }
 
     private companion object {

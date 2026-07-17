@@ -11,6 +11,8 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
+internal fun presentationOrderTimestamps(timestampsUs: List<Long>): List<Long> = timestampsUs.sorted()
+
 class FrameIndexer(private val context: Context) {
 
     suspend fun index(
@@ -26,7 +28,11 @@ class FrameIndexer(private val context: Context) {
             }
             extractor.selectTrack(trackIndex)
 
-            val timestamps = ArrayList<Long>(source.metadata.estimatedFrameCount ?: 512)
+            // Container metadata is untrusted and occasionally reports absurd frame counts. Avoid
+            // preallocating enough memory to crash before indexing has even started.
+            val initialCapacity = (source.metadata.estimatedFrameCount ?: DEFAULT_INITIAL_CAPACITY)
+                .coerceIn(MIN_INITIAL_CAPACITY, MAX_INITIAL_CAPACITY)
+            val timestamps = ArrayList<Long>(initialCapacity)
             var scanned = 0
             while (true) {
                 if (scanned % 64 == 0) currentCoroutineContext().ensureActive()
@@ -42,7 +48,10 @@ class FrameIndexer(private val context: Context) {
                 if (!extractor.advance()) break
             }
 
-            val orderedTimestamps = timestamps.distinct().sorted()
+            // Sort into presentation order, but do not use distinct(): separate samples are
+            // separate timeline frames even when a malformed or unusual container gives them the
+            // same PTS. Dropping duplicate PTS silently changes frame numbering and project data.
+            val orderedTimestamps = presentationOrderTimestamps(timestamps)
             if (orderedTimestamps.isEmpty()) {
                 throw IllegalArgumentException(
                     "SwingFrame could read the video metadata but could not index its frames.",
@@ -87,5 +96,11 @@ class FrameIndexer(private val context: Context) {
         val meanDeviation = intervals.sumOf { abs(it - meanInterval) } / intervals.size
         val variable = meanDeviation / meanInterval > 0.035
         return medianFps to variable
+    }
+
+    private companion object {
+        const val DEFAULT_INITIAL_CAPACITY = 512
+        const val MIN_INITIAL_CAPACITY = 16
+        const val MAX_INITIAL_CAPACITY = 250_000
     }
 }

@@ -92,7 +92,7 @@ Write-Host "`nChecking Gradle wrapper..." -ForegroundColor Cyan
 & .\gradlew.bat --version
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$Tasks = @("testDebugUnitTest", "assembleDebug", "--stacktrace")
+$Tasks = @("testDebugUnitTest", "lintDebug", "assembleDebug", "--stacktrace")
 if ($Clean) { $Tasks = @("clean") + $Tasks }
 
 Write-Host "`nBuilding SwingFrame APK..." -ForegroundColor Green

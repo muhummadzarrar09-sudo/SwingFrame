@@ -55,7 +55,7 @@ fi
 
 echo "[4/4] Building and testing SwingFrame..."
 cd "$ROOT_DIR"
-./gradlew --no-daemon testDebugUnitTest assembleDebug
+./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
 mkdir -p artifacts
 cp app/build/outputs/apk/debug/app-debug.apk artifacts/SwingFrame.apk
 

@@ -3,7 +3,11 @@ package app.swingframe.annotation
 import android.content.Context
 import android.net.Uri
 import android.util.AtomicFile
+import app.swingframe.util.LocalDataCorruptionException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -13,67 +17,107 @@ import java.security.MessageDigest
 /** App-private, atomic JSON persistence for lightweight annotation vectors. */
 class AnnotationStore(context: Context) {
     private val directory = File(context.filesDir, "annotation-projects").apply { mkdirs() }
+    private val ioMutex = Mutex()
 
     suspend fun load(uri: Uri): Map<Int, List<AnnotationShape>> = withContext(Dispatchers.IO) {
-        val file = projectFile(uri)
-        if (!file.exists()) return@withContext emptyMap()
+        ioMutex.withLock {
+            val file = projectFile(uri)
+            if (!file.exists()) return@withLock emptyMap()
 
-        runCatching {
-            val text = AtomicFile(file).openRead().bufferedReader(Charsets.UTF_8).use { it.readText() }
-            val root = JSONObject(text)
-            val frames = root.optJSONObject("frames") ?: return@runCatching emptyMap<Int, List<AnnotationShape>>()
-            buildMap<Int, List<AnnotationShape>> {
-                val keys = frames.keys()
-                while (keys.hasNext()) {
-                    val frameIndex = keys.next().toIntOrNull() ?: continue
-                    val array = frames.optJSONArray(frameIndex.toString()) ?: continue
-                    val shapes = buildList {
-                        for (index in 0 until array.length()) {
-                            decodeShape(array.optJSONObject(index))?.let(::add)
+            try {
+                val text = AtomicFile(file).openRead().bufferedReader(Charsets.UTF_8).use { it.readText() }
+                val root = JSONObject(text)
+                val version = root.optInt("version", 1)
+                require(version in 1..FORMAT_VERSION) { "Unsupported annotation version $version." }
+                val frames = root.optJSONObject("frames") ?: JSONObject()
+                buildMap<Int, List<AnnotationShape>> {
+                    val keys = frames.keys()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        val frameIndex = key.toIntOrNull()
+                            ?: error("Invalid annotation frame key: $key")
+                        val array = frames.optJSONArray(key)
+                            ?: error("Invalid annotation list for frame $frameIndex")
+                        val shapes = buildList {
+                            for (index in 0 until array.length()) {
+                                val shape = decodeShape(array.optJSONObject(index))
+                                    ?: error("Invalid annotation at frame $frameIndex, item $index")
+                                add(shape)
+                            }
                         }
+                        if (shapes.isNotEmpty()) put(frameIndex, shapes)
                     }
-                    if (shapes.isNotEmpty()) put(frameIndex, shapes)
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                val quarantined = quarantineCorruptFile(file)
+                throw LocalDataCorruptionException(
+                    "Annotation data was corrupt and was moved to ${quarantined.name}.",
+                    error,
+                )
             }
-        }.getOrDefault(emptyMap())
+        }
     }
 
-    suspend fun migrate(oldUri: Uri, newUri: Uri) {
-        val existing = load(oldUri)
-        if (existing.isNotEmpty()) save(newUri, existing)
-        delete(oldUri)
+    /** Copies first so project metadata can be committed before the old data is removed. */
+    suspend fun copy(oldUri: Uri, newUri: Uri) {
+        // Write even an empty map so stale orphan data at the destination cannot be inherited.
+        save(newUri, load(oldUri))
     }
 
     suspend fun delete(uri: Uri) = withContext(Dispatchers.IO) {
-        val file = projectFile(uri)
-        AtomicFile(file).delete()
+        ioMutex.withLock {
+            val file = projectFile(uri)
+            AtomicFile(file).delete()
+        }
+    }
+
+    suspend fun cleanupOrphans(activeUris: Collection<Uri>) = withContext(Dispatchers.IO) {
+        ioMutex.withLock {
+            val activeNames = activeUris.mapTo(mutableSetOf()) { projectFile(it).name }
+            directory.listFiles()?.forEach { file ->
+                val isAnnotationData = file.name.matches(ANNOTATION_FILE_PATTERN)
+                if (isAnnotationData && file.name !in activeNames) AtomicFile(file).delete()
+            }
+        }
     }
 
     suspend fun save(uri: Uri, annotations: Map<Int, List<AnnotationShape>>) =
         withContext(Dispatchers.IO) {
-            val root = JSONObject().put("version", FORMAT_VERSION)
-            val frames = JSONObject()
-            annotations.toSortedMap().forEach { (frameIndex, shapes) ->
-                if (shapes.isNotEmpty()) {
-                    frames.put(
-                        frameIndex.toString(),
-                        JSONArray().apply { shapes.forEach { put(encodeShape(it)) } },
-                    )
+            ioMutex.withLock {
+                val root = JSONObject().put("version", FORMAT_VERSION)
+                val frames = JSONObject()
+                annotations.toSortedMap().forEach { (frameIndex, shapes) ->
+                    if (shapes.isNotEmpty()) {
+                        frames.put(
+                            frameIndex.toString(),
+                            JSONArray().apply { shapes.forEach { put(encodeShape(it)) } },
+                        )
+                    }
+                }
+                root.put("frames", frames)
+
+                val atomicFile = AtomicFile(projectFile(uri))
+                val output = atomicFile.startWrite()
+                try {
+                    output.write(root.toString().toByteArray(Charsets.UTF_8))
+                    output.flush()
+                    atomicFile.finishWrite(output)
+                } catch (error: Throwable) {
+                    atomicFile.failWrite(output)
+                    throw error
                 }
             }
-            root.put("frames", frames)
-
-            val atomicFile = AtomicFile(projectFile(uri))
-            val output = atomicFile.startWrite()
-            try {
-                output.write(root.toString().toByteArray(Charsets.UTF_8))
-                output.flush()
-                atomicFile.finishWrite(output)
-            } catch (error: Throwable) {
-                atomicFile.failWrite(output)
-                throw error
-            }
         }
+
+    private fun quarantineCorruptFile(file: File): File {
+        val quarantined = File(
+            file.parentFile,
+            "${file.nameWithoutExtension}.corrupt-${System.currentTimeMillis()}.json",
+        )
+        return if (file.renameTo(quarantined)) quarantined else file
+    }
 
     private fun projectFile(uri: Uri): File {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -193,5 +237,6 @@ class AnnotationStore(context: Context) {
     private companion object {
         const val FORMAT_VERSION = 1
         const val DEFAULT_COLOR = -1 // White
+        val ANNOTATION_FILE_PATTERN = Regex("^[0-9a-f]{64}\\.json$")
     }
 }

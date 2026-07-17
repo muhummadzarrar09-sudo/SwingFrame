@@ -4,9 +4,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
@@ -53,8 +57,13 @@ fun ExportSetupDialog(
         containerColor = SwingFrameColors.Panel,
         title = { Text("Export analysis", color = SwingFrameColors.TextPrimary) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(13.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 480.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(13.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     ExportTypeButton("Still frame", type == ExportType.STILL) { type = ExportType.STILL }
                     ExportTypeButton("Video range", type == ExportType.VIDEO) { type = ExportType.VIDEO }
                 }
@@ -170,6 +179,7 @@ fun ExportSetupDialog(
 private fun ExportTypeButton(label: String, selected: Boolean, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
+        modifier = Modifier.defaultMinSize(minHeight = 48.dp),
         shape = RoundedCornerShape(3.dp),
         color = if (selected) SwingFrameColors.Accent else SwingFrameColors.PanelSoft,
     ) {
