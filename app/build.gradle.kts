@@ -15,7 +15,7 @@ android {
         minSdk = 29
         targetSdk = 36
         versionCode = 6
-        versionName = "0.5.1-hardening"
+        versionName = "0.5.1-hardening-r2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -70,7 +70,6 @@ dependencies {
 
     implementation("androidx.media3:media3-common:1.10.1")
     implementation("androidx.media3:media3-exoplayer:1.10.1")
-    implementation("androidx.media3:media3-ui-compose:1.10.1")
     implementation("androidx.media3:media3-inspector-frame:1.10.1")
     implementation("androidx.media3:media3-effect:1.10.1")
     implementation("androidx.media3:media3-transformer:1.10.1")

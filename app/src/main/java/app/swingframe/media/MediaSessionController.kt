@@ -249,6 +249,11 @@ class MediaSessionController(
             }
 
             _state.update { it.copy(isPlaying = true) }
+            // Wall-clock schedule: every frame extends the previous frame's slot, so a late
+            // decode is absorbed by the schedule instead of being added to every frame's display
+            // time. max() resets the schedule after a long stall so playback resumes at cadence
+            // instead of bursting through frames.
+            var displayAtMs = SystemClock.elapsedRealtime()
             while (isActive && index < video.totalFrames - 1) {
                 val next = index + 1
                 val deltaUs = (video.frameTimestampsUs[next] - video.frameTimestampsUs[index])
@@ -256,13 +261,13 @@ class MediaSessionController(
                 val frameDurationMs = (deltaUs / 1_000f / speed.coerceIn(0.1f, 1f))
                     .roundToLong()
                     .coerceAtLeast(4L)
-                val displayAtMs = SystemClock.elapsedRealtime() + frameDurationMs
+                displayAtMs = maxOf(displayAtMs, SystemClock.elapsedRealtime()) + frameDurationMs
                 delay((displayAtMs - SystemClock.elapsedRealtime()).coerceAtLeast(1L))
 
                 index = next
                 request(index, stopPlayback = false)
-                // Directional prefetch normally makes this immediate. If decoding is late, wait
-                // only for the unresolved remainder instead of adding decode time every frame.
+                // Directional prefetch normally makes this immediate; a late decode waits only
+                // for the unresolved frame rather than slowing every following frame.
                 if (!awaitCachedFrame(index)) break
             }
             _state.update { it.copy(isPlaying = false) }

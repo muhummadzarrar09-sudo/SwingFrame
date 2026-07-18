@@ -76,6 +76,9 @@ fun HomeScreen(
     onDismissError: () -> Unit,
 ) {
     var pendingDeleteProject by remember { mutableStateOf<LocalProject?>(null) }
+    // A weighted child is illegal inside a vertically scrollable Column (the scrolling axis is
+    // unbounded). Keep the root Column bounded instead: the weighted inner region scrolls the
+    // empty state on short screens, while the principles block stays pinned beneath it.
     val emptyStateScroll = if (recentProjects.isEmpty()) {
         Modifier.verticalScroll(rememberScrollState())
     } else {
@@ -87,89 +90,94 @@ fun HomeScreen(
             .background(SwingFrameColors.Background)
             .statusBarsPadding()
             .navigationBarsPadding()
-            .then(emptyStateScroll)
             .padding(horizontal = 22.dp),
     ) {
-        Spacer(Modifier.height(20.dp))
-        EditorialWordmark(section = "LOCAL ANALYSIS / 001")
-        Spacer(Modifier.height(72.dp))
-
-        Row(modifier = Modifier.fillMaxWidth()) {
-            Box(
-                modifier = Modifier
-                    .padding(top = 7.dp, end = 16.dp)
-                    .size(width = 3.dp, height = 82.dp)
-                    .background(SwingFrameColors.Accent, CircleShape),
-            )
-            Text(
-                text = "Your swing,\nheld to the frame.",
-                style = MaterialTheme.typography.displaySmall,
-                color = SwingFrameColors.TextPrimary,
-                modifier = Modifier.weight(1f),
-            )
-        }
-
-        Spacer(Modifier.height(22.dp))
-        Text(
-            text = "A private workspace for exact timing, deliberate geometry, and repeatable analysis.",
-            style = MaterialTheme.typography.bodyLarge,
-            color = SwingFrameColors.TextSecondary,
-            modifier = Modifier.fillMaxWidth(0.92f),
-        )
-
-        Spacer(Modifier.height(34.dp))
-        Button(
-            onClick = onImport,
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(58.dp),
-            shape = RoundedCornerShape(4.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = SwingFrameColors.Accent,
-                contentColor = SwingFrameColors.OnAccent,
-            ),
+                .weight(1f)
+                .then(emptyStateScroll),
         ) {
-            Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(20.dp))
-            Spacer(Modifier.size(10.dp))
-            Text("Open a swing", style = MaterialTheme.typography.titleMedium)
-        }
+            Spacer(Modifier.height(20.dp))
+            EditorialWordmark(section = "LOCAL ANALYSIS / 001")
+            Spacer(Modifier.height(72.dp))
 
-        Spacer(Modifier.height(14.dp))
-        AnimatedVisibility(visible = errorMessage != null) {
-            if (errorMessage != null) ErrorCard(errorMessage, onDismissError)
-        }
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Box(
+                    modifier = Modifier
+                        .padding(top = 7.dp, end = 16.dp)
+                        .size(width = 3.dp, height = 82.dp)
+                        .background(SwingFrameColors.Accent, CircleShape),
+                )
+                Text(
+                    text = "Your swing,\nheld to the frame.",
+                    style = MaterialTheme.typography.displaySmall,
+                    color = SwingFrameColors.TextPrimary,
+                    modifier = Modifier.weight(1f),
+                )
+            }
 
+            Spacer(Modifier.height(22.dp))
+            Text(
+                text = "A private workspace for exact timing, deliberate geometry, and repeatable analysis.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = SwingFrameColors.TextSecondary,
+                modifier = Modifier.fillMaxWidth(0.92f),
+            )
+
+            Spacer(Modifier.height(34.dp))
+            Button(
+                onClick = onImport,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(58.dp),
+                shape = RoundedCornerShape(4.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = SwingFrameColors.Accent,
+                    contentColor = SwingFrameColors.OnAccent,
+                ),
+            ) {
+                Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.size(10.dp))
+                Text("Open a swing", style = MaterialTheme.typography.titleMedium)
+            }
+
+            Spacer(Modifier.height(14.dp))
+            AnimatedVisibility(visible = errorMessage != null) {
+                if (errorMessage != null) ErrorCard(errorMessage, onDismissError)
+            }
+
+            if (recentProjects.isNotEmpty()) {
+                Spacer(Modifier.height(28.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("RECENT PROJECTS", style = MaterialTheme.typography.labelSmall, color = SwingFrameColors.TextMuted)
+                    Text("${recentProjects.size} LOCAL", style = MaterialTheme.typography.labelSmall, color = SwingFrameColors.Accent)
+                }
+                Spacer(Modifier.height(8.dp))
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    items(recentProjects, key = { it.id }) { project ->
+                        RecentProjectRow(
+                            project = project,
+                            onOpen = { onOpenProject(project) },
+                            onRelink = { onRelinkProject(project) },
+                            onDelete = { pendingDeleteProject = project },
+                        )
+                    }
+                    item {
+                        Spacer(Modifier.height(12.dp))
+                        AnalysisPrinciples()
+                    }
+                }
+            }
+        }
         if (recentProjects.isEmpty()) {
-            Spacer(Modifier.weight(1f))
             AnalysisPrinciples()
-        } else {
-            Spacer(Modifier.height(28.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("RECENT PROJECTS", style = MaterialTheme.typography.labelSmall, color = SwingFrameColors.TextMuted)
-                Text("${recentProjects.size} LOCAL", style = MaterialTheme.typography.labelSmall, color = SwingFrameColors.Accent)
-            }
-            Spacer(Modifier.height(8.dp))
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(7.dp),
-            ) {
-                items(recentProjects, key = { it.id }) { project ->
-                    RecentProjectRow(
-                        project = project,
-                        onOpen = { onOpenProject(project) },
-                        onRelink = { onRelinkProject(project) },
-                        onDelete = { pendingDeleteProject = project },
-                    )
-                }
-                item {
-                    Spacer(Modifier.height(12.dp))
-                    AnalysisPrinciples()
-                }
-            }
         }
         Spacer(Modifier.height(22.dp))
     }

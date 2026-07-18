@@ -1,23 +1,40 @@
 # SwingFrame next-chat handoff
 
-**Prepared:** July 17, 2026  
-**Repository:** `muhummadzarrar09-sudo/SwingFrame`  
-**Required branch:** `arena/019f6d62-swingframe`  
-**Current status:** deep static hardening is implemented but has not yet passed a real JDK/Android Gradle build in Arena.
+**Prepared:** July 18, 2026 (round 4 — compile fix + full-repo bug hunt)
+**Repository:** `muhummadzarrar09-sudo/SwingFrame`
+**Required branch:** `arena/019f6f8c-swingframe`
+**Current status:** the owner's reported compile failure and 13 additional bugs are fixed in source, statically reviewed, and `git diff --check` clean — but **nothing has been compiled or run yet**. Arena has no JDK/Android SDK. The very next step is the owner running the Gradle gate from Windows.
 
 ## Instructions for the next coding agent
 
-You are continuing a deep stabilization pass. Do **not** reset, discard, overwrite, or switch away from the existing branch. The working tree intentionally contains the previous agent's changes.
+You are continuing a deep stabilization pass. Do **not** reset, discard, overwrite, or switch away from the existing branch. The working tree intentionally contains the previous agents' changes.
 
 ### Read these documents first, in order
 
-1. [`ENGINEERING_AUDIT_2026-07-17.md`](ENGINEERING_AUDIT_2026-07-17.md)
-2. [`DEVICE_SMOKE_CHECKLIST.md`](DEVICE_SMOKE_CHECKLIST.md)
-3. [`TEST_MATRIX.md`](TEST_MATRIX.md)
-4. [`PHASE4_1_HARDENING.md`](PHASE4_1_HARDENING.md)
-5. This handoff document.
+1. [`BUG_HUNT_2026-07-18.md`](BUG_HUNT_2026-07-18.md) — what was just changed and why
+2. [`ENGINEERING_AUDIT_2026-07-17.md`](ENGINEERING_AUDIT_2026-07-17.md) — the full audit and open blockers
+3. [`DEVICE_SMOKE_CHECKLIST.md`](DEVICE_SMOKE_CHECKLIST.md)
+4. [`TEST_MATRIX.md`](TEST_MATRIX.md)
+5. [`PHASE4_1_HARDENING.md`](PHASE4_1_HARDENING.md)
+6. This handoff document.
 
-The engineering audit is the primary source of truth. It records what was found, what was changed, what remains open, and which claims are not yet runtime-verified.
+## What just happened (round 4 summary)
+
+The owner ran `.\swingframe-build.ps1` and hit a Kotlin compiler error:
+
+```
+FrameViewerScreen.kt:215:17 'fun ColumnScope.AnimatedVisibility(...)' cannot be called
+in this context with an implicit receiver. Use an explicit receiver if necessary.
+```
+
+That was fixed (explicit `this@Column` receiver for the badge, transition-state-driven plain `AnimatedVisibility` for the error overlay), along with a second identical latent error at the error-overlay call site. The owner then asked for a full bug hunt; 13 issues were fixed across viewer, home, export, playback, annotations, and build config, plus 5 new regression tests (`CarryForwardTest`). Full detail, severity grouping, and the deliberate no-fix list are in [`BUG_HUNT_2026-07-18.md`](BUG_HUNT_2026-07-18.md).
+
+The highest-stakes fixes to sanity-check after the build passes:
+
+- **Home empty-state crash on first launch** (weighted `Spacer` inside a vertically scrolling `Column`). Verify first-launch Home renders and scrolls.
+- **`OverlayEffect` Guava `ImmutableList`** in `ExportManager.kt` — probable second compile error hiding behind the first.
+- **Carry-forward parity** — preview, still export, and video export now share one rule (`annotation/CarryForward.kt`). Verify an annotated video export matches the preview ghosts.
+- **Export stroke/text scale** — now density-equivalent (`minDim/360`). Burned-in annotations should look the same weight as on-screen.
 
 ## First response to the owner
 
@@ -26,28 +43,19 @@ After reading the documents and inspecting `git status`, ask the owner for the *
 Ask them to run from Windows PowerShell:
 
 ```powershell
-cd C:\path\to\SwingFrame
+cd D:\fun` projects` out` of` boredom\SwingFrame   # owner's actual path
 .\swingframe-build.ps1 2>&1 | Tee-Object -FilePath .\swingframe-build-output.txt
 ```
 
-If they use the smaller helper instead:
+The script runs `testDebugUnitTest → lintDebug → assembleDebug` and copies the APK to `artifacts\SwingFrame.apk` with a SHA-256. For a faster loop on compile-only failures:
 
 ```powershell
-.\scripts\build-windows.ps1 2>&1 | Tee-Object -FilePath .\swingframe-build-output.txt
+.\gradlew compileDebugKotlin --stacktrace
 ```
 
-The scripts run:
+Request either the attached `swingframe-build-output.txt` or the entire output from the first `FAILURE:`/compiler error through the final lines. Do not diagnose from a screenshot of the last line — Gradle often reports the useful error hundreds of lines earlier.
 
-```text
-testDebugUnitTest → lintDebug → assembleDebug
-```
-
-Request either:
-
-- The attached `swingframe-build-output.txt`, or
-- The entire output pasted from the first `FAILURE:`/compiler error through the final lines.
-
-Do not diagnose from a screenshot containing only the last line. Gradle frequently reports the useful Kotlin/AAPT error hundreds of lines earlier.
+Owner's known-good environment: JDK 17 (`Eclipse Adoptium jdk-17.0.19.10-hotspot`), Android SDK present, `compileSdk/targetSdk 36`, `minSdk 29`, Kotlin 2.3.21, AGP 8.13.2, Gradle 8.13 wrapper.
 
 ## Before changing code
 
@@ -59,42 +67,24 @@ git diff --check
 git diff --stat
 ```
 
-Confirm the branch is exactly:
-
-```text
-arena/019f6d62-swingframe
-```
-
-Do not run `git reset --hard`, `git clean`, checkout another branch, or regenerate the project. Preserve all existing edits and untracked audit/test/resource files.
+Confirm the branch is exactly `arena/019f6f8c-swingframe`. Do not run `git reset --hard`, `git clean`, checkout another branch, or regenerate the project. Preserve all existing edits and untracked audit/test/resource files.
 
 ## Path A — the Gradle build fails
 
 ### 1. Classify the earliest real failure
 
-Ignore cascaded errors until the first root error is fixed. Classify it as one of:
-
-- Kotlin compiler/type/API error
-- Android resource/AAPT error
-- Manifest merge error
-- Unit-test failure
-- Android Lint failure
-- R8/ProGuard failure
-- SDK/JDK/toolchain problem
-- Dependency download/network problem
+Fix the **first root error only**; later errors are usually cascades. Classify as: Kotlin compiler / AAPT resource / manifest merge / unit test / lint / R8 / toolchain / network.
 
 ### 2. Reproduce the narrowest failing task
 
-Examples:
-
 ```bash
+./gradlew compileDebugKotlin --stacktrace
 ./gradlew testDebugUnitTest --stacktrace
 ./gradlew lintDebug --stacktrace
-./gradlew compileDebugKotlin --stacktrace
-./gradlew processDebugResources --stacktrace
 ./gradlew assembleDebug --stacktrace
 ```
 
-If Arena still has no JDK or network access, use the owner's complete output as authoritative. Make source fixes locally, run all available static checks, and clearly identify anything the owner must rerun.
+Arena cannot run these (no JDK/SDK). Use the owner's complete output as authoritative; make source fixes locally, run all static checks available here, and clearly state what the owner must rerun.
 
 ### 3. Fix root causes, not symptoms
 
@@ -107,6 +97,7 @@ For every fix:
 - Preserve project and annotation data across failures.
 - Keep touch targets at least 48 dp.
 - Do not reintroduce overlapping fixed-offset viewer controls.
+- Keep preview / still-export / video-export rendering rules identical (see `CarryForward.kt` and the `AnnotationBitmapRenderer` scale comment).
 - Add or update a regression test whenever logic can be tested outside a device.
 
 ### 4. Rerun the narrow task, then the complete gate
@@ -117,144 +108,65 @@ After the narrow task passes:
 ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug assembleRelease
 ```
 
-Then run:
-
-```bash
-git diff --check
-```
-
-Report exactly which tasks passed. Do not say “build fixed” if only compilation passed but tests/lint/R8 did not.
+Report exactly which tasks passed. Do not say "build fixed" if only compilation passed but tests/lint/R8 did not.
 
 ## Path B — the Gradle build succeeds
 
-If the output contains all of the following, treat the compiler gate as passed:
+Treat the compiler gate as passed only if the output shows `testDebugUnitTest`, `lintDebug`, `assembleDebug` all succeeded, `BUILD SUCCESSFUL`, and `artifacts\SwingFrame.apk` exists with a printed SHA-256. Record the SHA-256 and build date in the test notes.
 
-- `testDebugUnitTest` succeeded
-- `lintDebug` succeeded
-- `assembleDebug` succeeded
-- Final output says `BUILD SUCCESSFUL`
-- `artifacts\SwingFrame.apk` exists and the script prints a SHA-256
+### Release/R8 gate
 
-Record the APK SHA-256 and build date in the test notes. Then proceed to device installation rather than adding features.
+`swingframe-build.ps1` does **not** cover release. Once debug passes, also run:
+
+```powershell
+.\gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug assembleRelease
+```
+
+R8 has never run against this codebase; expect reachable-code/keep-rule findings from Media3/Transformer and fix them before calling the build gate done.
 
 ### Install
-
-With USB debugging enabled:
 
 ```powershell
 .\scripts\install-windows.ps1
 ```
 
-If installation fails, collect:
-
-```powershell
-adb devices
-adb install -r .\artifacts\SwingFrame.apk
-adb shell getprop ro.build.version.release
-adb shell getprop ro.product.manufacturer
-adb shell getprop ro.product.model
-```
-
-For a clean-install migration check, first test `adb install -r` so existing project data is preserved. Only uninstall after the owner explicitly agrees that app-private test data may be erased.
+If installation fails, collect `adb devices`, `adb install -r .\artifacts\SwingFrame.apk`, and `adb shell getprop ro.build.version.release / ro.product.manufacturer / ro.product.model`. Prefer `adb install -r` to preserve existing projects; only uninstall with the owner's explicit consent.
 
 ## Device test sequence after a successful build
 
-Use [`DEVICE_SMOKE_CHECKLIST.md`](DEVICE_SMOKE_CHECKLIST.md) as the step-by-step checklist and [`TEST_MATRIX.md`](TEST_MATRIX.md) for codec fixtures.
-
-Run tests in this order:
+Use [`DEVICE_SMOKE_CHECKLIST.md`](DEVICE_SMOKE_CHECKLIST.md) step by step and [`TEST_MATRIX.md`](TEST_MATRIX.md) for codec fixtures. Run gates in this order:
 
 ### Gate 1 — launch and navigation
 
-1. Launch the app.
-2. Verify Home is not clipped.
-3. Cancel the document picker.
-4. Import a normal 1080p H.264 clip.
-5. Press system Back at Source Review, Indexing, and Viewer.
-6. Cancel Indexing and wait long enough to prove Viewer does not reopen itself.
+1. Launch; **first-launch Home must render and scroll** (regression check for the empty-state fix).
+2. Cancel the document picker.
+3. Import a normal 1080p H.264 clip.
+4. System Back at Source Review, Indexing, Viewer.
+5. Cancel Indexing; prove Viewer does not reopen itself.
 
-If the app crashes, collect logs immediately:
-
-```powershell
-adb logcat -c
-# reproduce once
-adb logcat -d -v threadtime > .\swingframe-logcat.txt
-```
-
-Ask for `swingframe-logcat.txt`. Diagnose the earliest `FATAL EXCEPTION`, `AndroidRuntime`, MediaCodec, Transformer, or application stack trace.
+On crash: `adb logcat -c`, reproduce once, `adb logcat -d -v threadtime > .\swingframe-logcat.txt`. Diagnose the earliest `FATAL EXCEPTION` / MediaCodec / Transformer trace.
 
 ### Gate 2 — viewer layout
 
-Test default font size and a large font/display-size setting.
-
-Verify:
-
-- Header, frame, tool bar, action bar, and timeline never overlap.
-- The horizontal tool row scrolls.
-- The filename remains readable.
-- More actions and speed menus open correctly.
-- Source Review and Export Setup scroll.
-- TalkBack can identify tools and adjust the timeline.
-
-Capture screenshots at Home, Source Review, Viewer, overflow menu, bookmark dialog, and export setup. Fix clipping/overlap before media optimization.
+Default and large font/display sizes. Header, frame, tool bar, action bar, timeline never overlap; tool row scrolls; filename readable; menus open; Source Review and Export Setup scroll; TalkBack works. Screenshot Home, Source Review, Viewer, overflow menu, bookmark dialog, export setup.
 
 ### Gate 3 — frame correctness and races
 
-Use a clip with obvious frame changes.
-
-- Scrub beginning → end → middle → beginning while thumbnails load.
-- Stop on an identifiable frame.
-- Confirm frame number, timestamp, bitmap, and annotations agree.
-- Step repeatedly forward/backward.
-- Change speed during playback.
-- Background the app during playback; it must return paused.
-
-Any stale final frame is a P0 correctness bug. Collect a screen recording plus logcat.
+Scrub beginning → end → middle while thumbnails load; confirm frame number, timestamp, bitmap, and annotations agree; step forward/back; change speed during playback; background during playback must return paused. **Play a clip end-to-end and confirm the video does not lag its audio/timestamps** (regression check for the wall-clock cadence fix). Any stale final frame is P0.
 
 ### Gate 4 — annotation persistence and geometry
 
-- Test all tools.
-- Test a non-axis-aligned angle on 16:9 media.
-- Test edge movement, undo/redo, carry, hide/show, clear, and freehand.
-- Relaunch and confirm annotations/bookmarks/last frame survive.
-- Test relink match, mismatch cancel, and mismatch confirmation.
-- Existing projects may receive a one-time fingerprint mismatch because fingerprints were upgraded to sampled versioned values.
+All tools; non-axis-aligned angle on 16:9; **tap the angle tool without dragging and confirm no 0° ghost remains** (regression check); edge movement, undo/redo, carry, hide/show, clear, freehand; relaunch persistence; relink match/mismatch/mismatch-confirm. Existing projects may get a one-time fingerprint mismatch from the sampled-fingerprint upgrade — and note the known open issue: `LEGACY_UNKNOWN` (blank fingerprint) projects reopen **without** any validation prompt; fixing that needs a warn-and-confirm UX decision.
 
 ### Gate 5 — export
 
-Start with short 1080p H.264 fixtures:
-
-- Clean still
-- Annotated still
-- 1× video with audio
-- 0.5× video
-- 0.25× video
-- Cancelled export
-
-Verify frame range, annotation timing, orientation, gallery publication, and partial-file cleanup. Then test portrait rotation, HEVC, VFR, 4K, and HDR.
-
-Long export is still process-bound. Background/process-death durability is a known release blocker; do not mark export production-ready until foreground durable work is implemented and tested.
+Short 1080p H.264 first: clean still, annotated still, 1× w/ audio, 0.5×, 0.25×, cancelled export. **Compare an annotated still and an annotated video against the preview frame: carried ghosts must appear identically on all three, and stroke/text weight must match on-screen proportions** (regression checks for the parity and scale fixes). Then portrait, HEVC, VFR, 4K, HDR. Long export is still process-bound — a known release blocker until foreground durable work lands.
 
 ### Gate 6 — memory and performance
 
-Record:
-
-- Probe/index duration
-- First-frame latency
-- Warm adjacent seek
-- Cold random seek
-- Peak memory during repeated 4K seeks
-- Peak memory during annotated 4K still export
-- Thermal behavior during video export
-
-Use Android Studio Profiler or:
-
-```powershell
-adb shell dumpsys meminfo app.swingframe
-```
+Probe/index duration, first-frame latency, warm/cold seek, peak memory on repeated 4K seeks and annotated 4K still export, thermal behavior during video export (`adb shell dumpsys meminfo app.swingframe`).
 
 ## How to report device findings
-
-For each issue, require:
 
 ```text
 Build SHA-256:
@@ -272,38 +184,34 @@ Do not fix vague reports by guessing. Reproduce or obtain enough evidence to ide
 
 ## Definition of success for this checkpoint
 
-This checkpoint is complete only when:
-
-1. Unit tests pass.
+1. Unit tests pass (including the new `CarryForwardTest`).
 2. Lint passes with no release-blocking findings.
 3. Debug APK assembles and installs.
-4. Minified release assembly/R8 passes in CI or locally.
-5. Home/import/viewer/export layouts have no clipping at target dimensions and large font size.
-6. Rapid seeks never display stale frame identity.
-7. Projects, annotations, and bookmarks survive relaunch and relinking.
-8. Required 1080p still/video exports pass timing/orientation checks.
-9. No app crash or silent data loss remains in the smoke sequence.
-10. All results are recorded in the device checklist/matrix.
+4. Minified release assembly/R8 passes.
+5. Home/import/viewer/export layouts have no clipping at target dimensions and large font.
+6. Rapid seeks never display stale frame identity; playback holds wall-clock cadence.
+7. Projects, annotations, bookmarks survive relaunch and relinking.
+8. Required 1080p still/video exports pass timing/orientation checks, and burned-in annotations match the preview (carry + stroke weight).
+9. No crash or silent data loss in the smoke sequence.
+10. All results recorded in the device checklist/matrix.
 
 Do **not** begin Compare, AI pose, tempo, or shot-tracing feature work before this checkpoint is closed.
 
 ## Work remaining after the checkpoint
 
-Once build/device failures are fixed, continue release hardening in this order:
-
-1. Process-durable foreground video export.
-2. Landscape/tablet/foldable viewer composition; portrait remains intentionally locked until that layout is tested.
-3. Project-ID-based annotation storage migration.
-4. In-app quarantine recovery/export for corrupt local JSON.
-5. String-resource localization and plural handling.
-6. Freehand geometric simplification.
-7. Instrumentation, screenshot, accessibility, benchmark, and memory suites.
-8. Baseline profile and startup benchmark.
-9. Signed release configuration, privacy policy, release checklist, and store assets.
-10. Promote to `1.0.0-rc1` only after the complete gate.
+1. `LEGACY_UNKNOWN` fingerprint warn-and-confirm flow (needs product decision).
+2. Angle label edge-clipping placement rule.
+3. Process-durable foreground video export.
+4. Landscape/tablet/foldable viewer composition (portrait stays locked until tested).
+5. Project-ID-based annotation storage migration.
+6. In-app quarantine recovery/export for corrupt local JSON.
+7. String-resource localization and plurals.
+8. Freehand geometric simplification.
+9. Instrumentation, screenshot, accessibility, benchmark, and memory suites.
+10. Baseline profile and startup benchmark.
+11. Signed release configuration, privacy policy, release checklist, store assets.
+12. Promote to `1.0.0-rc1` only after the complete gate.
 
 ## Copy/paste prompt for a new chat
 
-Use this exact prompt when starting the next coding-agent chat:
-
-> Continue the SwingFrame stabilization work on the existing Arena branch. Do not reset or discard the working tree. First read `docs/ENGINEERING_AUDIT_2026-07-17.md`, then `docs/NEXT_CHAT_HANDOFF.md`, `docs/DEVICE_SMOKE_CHECKLIST.md`, and `docs/TEST_MATRIX.md`. Inspect git status and the current diff. Ask me for the complete `swingframe-build-output.txt` from running `.\swingframe-build.ps1`. If the build failed, identify and fix the earliest root compiler/test/lint/resource error, add regression coverage, and tell me exactly what to rerun. If it succeeded, verify the success markers and SHA-256, then guide me through install, logcat collection, and the device smoke checklist before adding any new features.
+> Continue the SwingFrame stabilization work on the existing Arena branch `arena/019f6f8c-swingframe`. Do not reset or discard the working tree. First read `docs/BUG_HUNT_2026-07-18.md` and `docs/NEXT_CHAT_HANDOFF.md`, then `docs/ENGINEERING_AUDIT_2026-07-17.md`, `docs/DEVICE_SMOKE_CHECKLIST.md`, and `docs/TEST_MATRIX.md`. Inspect git status and the current diff. Ask me for the complete `swingframe-build-output.txt` from running `.\swingframe-build.ps1` in Windows PowerShell. If the build failed, identify and fix the earliest root compiler/test/lint/resource error only, add regression coverage, and tell me exactly what to rerun. If it succeeded, verify the success markers and SHA-256, run the release/R8 gate, then guide me through install, logcat collection, and the device smoke checklist — including the first-launch Home, playback cadence, no-ghost-angle-tap, and preview-vs-export carry/stroke parity regression checks — before adding any new features.

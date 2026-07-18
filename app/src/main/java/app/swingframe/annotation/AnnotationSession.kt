@@ -38,7 +38,7 @@ class AnnotationSession(
     fun snapshot(frameIndex: Int, carryForward: Boolean): AnnotationFrameSnapshot =
         AnnotationFrameSnapshot(
             current = byFrame[frameIndex]?.toList().orEmpty(),
-            carried = if (carryForward) carriedFor(frameIndex) else emptyList(),
+            carried = if (carryForward) carriedAnnotationsFor(byFrame, frameIndex).toList() else emptyList(),
             canUndo = undo[frameIndex]?.isNotEmpty() == true,
             canRedo = redo[frameIndex]?.isNotEmpty() == true,
         )
@@ -124,14 +124,6 @@ class AnnotationSession(
         stack.addLast(snapshot)
     }
 
-    private fun carriedFor(frameIndex: Int): List<AnnotationShape> {
-        for (distance in 1..CARRY_RADIUS) {
-            byFrame[frameIndex - distance]?.takeIf { it.isNotEmpty() }?.let { return it.toList() }
-            byFrame[frameIndex + distance]?.takeIf { it.isNotEmpty() }?.let { return it.toList() }
-        }
-        return emptyList()
-    }
-
     private fun scheduleSave() {
         val uri = sourceUri ?: return
         val data = allFrames()
@@ -167,7 +159,6 @@ class AnnotationSession(
     private companion object {
         const val HISTORY_LIMIT = 50
         const val MAX_HISTORY_FRAMES = 24
-        const val CARRY_RADIUS = 3
         const val SAVE_DEBOUNCE_MS = 120L
     }
 }

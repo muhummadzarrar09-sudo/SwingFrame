@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -256,6 +257,8 @@ private fun CompactAction(
     Surface(
         onClick = onClick,
         enabled = enabled,
+        // The content alone measures under 48dp tall; enforce the documented touch-target floor.
+        modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp),
         shape = RoundedCornerShape(3.dp),
         color = if (active) SwingFrameColors.Accent else Color.Transparent,
     ) {

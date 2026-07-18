@@ -10,7 +10,9 @@ import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.inspector.frame.FrameExtractor
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.guava.await
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 /**
@@ -32,8 +34,12 @@ class Media3FrameDecoder(
     private var usingSoftwareFallback = false
     private var extractor = createExtractor(MediaCodecSelector.DEFAULT)
 
-    suspend fun decodePreviewFrame(timestampUs: Long): Bitmap =
-        decodeSourceFrame(timestampUs).scaledForPreview(MAX_PREVIEW_EDGE_PX)
+    suspend fun decodePreviewFrame(timestampUs: Long): Bitmap {
+        val source = decodeSourceFrame(timestampUs)
+        // FrameExtractor pins decode calls to the application thread, but bitmap scaling is pure
+        // CPU work and must not block that thread during rapid scrubbing.
+        return withContext(Dispatchers.Default) { source.scaledForPreview(MAX_PREVIEW_EDGE_PX) }
+    }
 
     suspend fun decodeSourceFrame(timestampUs: Long): Bitmap {
         assertApplicationThread()

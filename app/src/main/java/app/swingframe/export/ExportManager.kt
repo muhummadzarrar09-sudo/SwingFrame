@@ -25,7 +25,9 @@ import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
 import app.swingframe.annotation.AnnotationShape
+import app.swingframe.annotation.carriedAnnotationsFor
 import app.swingframe.data.Media3FrameDecoder
+import com.google.common.collect.ImmutableList
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -105,8 +107,11 @@ class ExportManager(private val context: Context) {
                         val frameIndex = ExportTimelineMapper.nearestFrameIndex(request.frameTimestampsUs, sourceTimeUs)
                             .coerceIn(safeStart, safeEnd)
                         val exact = request.annotationsByFrame[frameIndex].orEmpty()
-                        val carried = if (request.carryForward && exact.isEmpty()) {
-                            carriedAnnotations(request.annotationsByFrame, frameIndex)
+                        // One shared carry rule across preview, still export, and video export:
+                        // ghosts render whenever carry-forward is enabled, even on frames that
+                        // already have their own vectors. Video previously dropped them there.
+                        val carried = if (request.carryForward) {
+                            carriedAnnotationsFor(request.annotationsByFrame, frameIndex)
                         } else {
                             emptyList()
                         }
@@ -114,7 +119,8 @@ class ExportManager(private val context: Context) {
                         AnnotationBitmapRenderer.draw(canvas, canvas.width, canvas.height, exact)
                     }
                 }
-                videoEffects += OverlayEffect(listOf(overlay))
+                // OverlayEffect's constructor takes Guava's ImmutableList, not a Kotlin List.
+                videoEffects += OverlayEffect(ImmutableList.of(overlay))
             }
 
             val clipping = MediaItem.ClippingConfiguration.Builder()
@@ -250,17 +256,6 @@ class ExportManager(private val context: Context) {
             resolver.delete(uri, null, null)
             throw error
         }
-    }
-
-    private fun carriedAnnotations(
-        annotations: Map<Int, List<AnnotationShape>>,
-        frameIndex: Int,
-    ): List<AnnotationShape> {
-        for (distance in 1..3) {
-            annotations[frameIndex - distance]?.takeIf { it.isNotEmpty() }?.let { return it }
-            annotations[frameIndex + distance]?.takeIf { it.isNotEmpty() }?.let { return it }
-        }
-        return emptyList()
     }
 
     private fun timestamp(): String = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
