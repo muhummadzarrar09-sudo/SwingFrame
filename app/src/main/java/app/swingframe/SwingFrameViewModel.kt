@@ -438,11 +438,12 @@ class SwingFrameViewModel(application: Application) : AndroidViewModel(applicati
         }
         exportJob = viewModelScope.launch {
             try {
+                val annotationSnapshot = annotationSession.snapshot(frameIndex, state.carryForwardEnabled)
                 val uri = exportManager.exportStill(
                     sourceUri = source.uri,
                     timestampUs = video.frameTimestampsUs[frameIndex],
-                    annotations = annotationSession.snapshot(frameIndex, state.carryForwardEnabled).current,
-                    carriedAnnotations = annotationSession.snapshot(frameIndex, state.carryForwardEnabled).carried,
+                    annotations = annotationSnapshot.current,
+                    carriedAnnotations = annotationSnapshot.carried,
                     burnAnnotations = burnAnnotations,
                 )
                 _uiState.update {

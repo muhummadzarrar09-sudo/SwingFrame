@@ -252,6 +252,10 @@ fun AnnotationCanvas(
                         onSelect(angle.id)
                         pendingAngle = null
                         draft = null
+                    } else if (pendingAngle == null) {
+                        // Accidental tap with no drag: discard the degenerate draft instead of
+                        // leaving a zero-length "0°" ghost on the frame.
+                        draft = null
                     }
                 }
 

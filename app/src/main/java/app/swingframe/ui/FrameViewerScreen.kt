@@ -2,6 +2,11 @@ package app.swingframe.ui
 
 import android.os.SystemClock
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.MutableTransitionState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -135,6 +140,10 @@ fun FrameViewerScreen(
     var panX by remember(video.source.uri) { mutableFloatStateOf(0f) }
     var panY by remember(video.source.uri) { mutableFloatStateOf(0f) }
     var stageSize by remember(video.source.uri) { mutableStateOf(IntSize.Zero) }
+    // The error overlay lives in the root Box, where no ColumnScope receiver exists, so the
+    // scope-free transition-state overload is required (the Boolean overload is ColumnScope-only).
+    val errorOverlayState = remember { MutableTransitionState(false) }
+    errorOverlayState.targetState = state.errorMessage != null
     val timestampUs = video.frameTimestampsUs.getOrElse(state.currentFrameIndex) { 0L }
     val frameContentReady = state.resolvedFrameIndex == state.currentFrameIndex && state.currentBitmap != null
 
@@ -212,7 +221,9 @@ fun FrameViewerScreen(
                         .onSizeChanged { stageSize = it },
                 )
 
-                AnimatedVisibility(
+                // Explicit receiver: the inner BoxScope hides the outer ColumnScope via
+                // @LayoutScopeMarker, so the implicit ColumnScope receiver is not callable here.
+                this@Column.AnimatedVisibility(
                     visible = state.isFrameLoading,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
@@ -265,10 +276,12 @@ fun FrameViewerScreen(
         }
 
         AnimatedVisibility(
-            visible = state.errorMessage != null,
+            visibleState = errorOverlayState,
             modifier = Modifier
                 .align(Alignment.Center)
                 .padding(horizontal = 20.dp),
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically(),
         ) {
             state.errorMessage?.let { ErrorCard(it, onDismissError) }
         }
@@ -759,8 +772,9 @@ private fun FilmstripScrubber(
                 }
             }
         } else {
+            val orderedThumbnails = remember(thumbnails) { thumbnails.sortedBy { it.frameIndex } }
             Row(Modifier.fillMaxSize()) {
-                thumbnails.sortedBy { it.frameIndex }.forEach { thumbnail ->
+                orderedThumbnails.forEach { thumbnail ->
                     Box(
                         modifier = Modifier
                             .weight(1f)
