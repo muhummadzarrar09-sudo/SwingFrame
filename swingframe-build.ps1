@@ -1,251 +1,315 @@
-# swingframe-build.ps1
-# Builds SwingFrame.apk and opens Explorer with the APK selected.
+<#
+    swingframe-build.ps1 - build SwingFrame, install it, and watch the logs.
 
+    Usage:
+        .\swingframe-build.ps1                 build + install + open logcat
+        .\swingframe-build.ps1 -NoInstall      build only, then reveal the APK
+        .\swingframe-build.ps1 -Clean          wipe build dirs first
+        .\swingframe-build.ps1 -Release        build an unsigned release APK
+        .\swingframe-build.ps1 -NoLogcat       skip the log tail
+        .\swingframe-build.ps1 -Offline        build without hitting the network
+
+    NOTE: this file is deliberately pure ASCII.
+#>
 param(
-    [string]$ProjectPath = $PSScriptRoot
+    [switch]$Clean,
+    [switch]$NoInstall,
+    [switch]$NoLogcat,
+    [switch]$Release,
+    [switch]$Offline
 )
 
 $ErrorActionPreference = "Stop"
 
-function Write-Step { param($Message) Write-Host "`n[ >> ] $Message" -ForegroundColor Cyan }
-function Write-Ok   { param($Message) Write-Host "[ OK ] $Message" -ForegroundColor Green }
-function Write-Warn { param($Message) Write-Host "[ ~~ ] $Message" -ForegroundColor Yellow }
-function Write-Fail { param($Message) Write-Host "[ !! ] $Message" -ForegroundColor Red; exit 1 }
+$AppId   = "app.swingframe"
+$Root    = Split-Path $PSScriptRoot -Parent
+$Variant = if ($Release) { "release" } else { "debug" }
+$Task    = if ($Release) { "assembleRelease" } else { "assembleDebug" }
 
-try {
-    Set-Location $ProjectPath
-} catch {
-    Write-Fail "Project path does not exist: $ProjectPath"
+function Step { param($m) Write-Host "`n[ >> ] $m" -ForegroundColor Cyan }
+function Ok   { param($m) Write-Host "[ OK ] $m" -ForegroundColor Green }
+function Warn { param($m) Write-Host "[ ~~ ] $m" -ForegroundColor Yellow }
+function Info { param($m) Write-Host "       $m" -ForegroundColor DarkGray }
+function Die  {
+    param($m, $hint)
+    Write-Host "`n[ !! ] $m" -ForegroundColor Red
+    if ($hint) { Write-Host "       $hint" -ForegroundColor Yellow }
+    exit 1
 }
 
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+
+Write-Host ""
+Write-Host "  ____          _             _____                        " -ForegroundColor DarkCyan
+Write-Host " / ___|_      _(_)_ __   __ _|  ___| __ __ _ _ __ ___   ___" -ForegroundColor DarkCyan
+Write-Host " \___ \ \ /\ / / | '_ \ / _` | |_ | '__/ _` | '_ ` _ \ / _ \" -ForegroundColor DarkCyan
+Write-Host "  ___) \ V  V /| | | | | (_| |  _|| | | (_| | | | | | |  __/" -ForegroundColor DarkCyan
+Write-Host " |____/ \_/\_/ |_|_| |_|\__, |_|  |_|  \__,_|_| |_| |_|\___|" -ForegroundColor DarkCyan
+Write-Host "                        |___/                               " -ForegroundColor DarkCyan
+Write-Host "   the ultimate on-device AI golf coach                     " -ForegroundColor DarkGray
+Write-Host ""
+
+# ---------------------------------------------------------- 0. sanity checks
 if (-not (Test-Path "settings.gradle.kts")) {
-    Write-Fail "Not an Android project root. Put this file in the SwingFrame folder and run it there."
+    Die "No settings.gradle.kts here - you must run this from the project root."
 }
 
-# ---- 0. Source revision preflight ------------------------------------------
-
-$RevisionFile = "SOURCE_REVISION.txt"
-if (Test-Path $RevisionFile) {
-    $Revision = (Get-Content $RevisionFile -Raw).Trim()
-    Write-Ok "Source revision: $Revision"
-} else {
-    Write-Warn "SOURCE_REVISION.txt is missing; this may be an outdated workspace copy."
+if (-not (Get-Command java -ErrorAction SilentlyContinue) -and -not $env:JAVA_HOME) {
+    Die "No Java found." "Install Eclipse Temurin JDK 17: https://adoptium.net/temurin/releases/?version=17"
 }
 
-$AnnotationCanvas = "app\src\main\java\app\swingframe\ui\AnnotationCanvas.kt"
-if (Test-Path $AnnotationCanvas) {
-    $AnnotationSource = Get-Content $AnnotationCanvas -Raw
-    if ($AnnotationSource.Contains("when (val drag = selectDrag)") -and
-        -not $AnnotationSource.Contains("null -> draft")) {
-        Write-Fail "Outdated AnnotationCanvas.kt detected. Download/overwrite the current SwingFrame workspace before building."
-    }
-}
+# ------------------------------------------------- 1. local.properties / SDK
+Step "Checking Android SDK..."
+if (-not (Test-Path "local.properties")) {
+    $sdk = @($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT,
+             "$env:LOCALAPPDATA\Android\Sdk", "C:\Android\Sdk") |
+           Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 
-# ---- 1. Java ---------------------------------------------------------------
-
-Write-Step "Checking Java..."
-
-$JavaExe = $null
-if ($env:JAVA_HOME -and (Test-Path (Join-Path $env:JAVA_HOME "bin\java.exe"))) {
-    $JavaExe = Join-Path $env:JAVA_HOME "bin\java.exe"
-}
-
-if (-not $JavaExe) {
-    $PathJava = Get-Command java.exe -ErrorAction SilentlyContinue
-    if ($PathJava) {
-        $JavaExe = $PathJava.Source
-    }
-}
-
-if (-not $JavaExe) {
-    $JdkCandidates = @(
-        (Join-Path $env:ProgramFiles "Android\Android Studio\jbr"),
-        (Join-Path $env:LOCALAPPDATA "Programs\Android Studio\jbr")
-    )
-
-    $JdkRoots = @(
-        (Join-Path $env:ProgramFiles "Eclipse Adoptium"),
-        (Join-Path $env:ProgramFiles "Microsoft"),
-        (Join-Path $env:ProgramFiles "Java")
-    )
-
-    foreach ($Root in $JdkRoots) {
-        if (Test-Path $Root) {
-            $JdkCandidates += Get-ChildItem $Root -Directory -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime -Descending |
-                ForEach-Object { $_.FullName }
-        }
-    }
-
-    $JdkHome = $JdkCandidates |
-        Where-Object { Test-Path (Join-Path $_ "bin\java.exe") } |
-        Select-Object -First 1
-
-    if ($JdkHome) {
-        $env:JAVA_HOME = $JdkHome
-        $env:Path = "$(Join-Path $JdkHome 'bin');$env:Path"
-        $JavaExe = Join-Path $JdkHome "bin\java.exe"
-    }
-}
-
-if (-not $JavaExe) {
-    Write-Fail "JDK 17+ not found. Install it with: winget install --exact --id EclipseAdoptium.Temurin.17.JDK"
-}
-
-Write-Ok "Java found: $JavaExe"
-
-# ---- 2. Android SDK --------------------------------------------------------
-
-Write-Step "Checking Android SDK..."
-
-if (-not $env:ANDROID_SDK_ROOT) {
-    if ($env:ANDROID_HOME) {
-        $env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
+    if ($sdk) {
+        $escaped = $sdk -replace '\\', '\\\\' -replace ':', '\:'
+        "sdk.dir=$escaped" | Set-Content "local.properties" -Encoding ASCII
+        Ok "Wrote local.properties -> $sdk"
     } else {
-        $env:ANDROID_SDK_ROOT = Join-Path $env:LOCALAPPDATA "Android\Sdk"
+        Die "Android SDK not found." `
+            "Install Android Studio, or the command-line tools, then set ANDROID_HOME."
+    }
+} else {
+    Ok "local.properties present."
+}
+
+# ------------------------------------------------------- 2. Gradle wrapper
+Step "Checking Gradle wrapper..."
+$jarPath = "gradle\wrapper\gradle-wrapper.jar"
+$jarLooksValid = $false
+
+if (Test-Path $jarPath) {
+    try {
+        $fs = [System.IO.File]::OpenRead((Resolve-Path $jarPath))
+        $sig = New-Object byte[] 2
+        $null = $fs.Read($sig, 0, 2)
+        $fs.Close()
+        if ($sig[0] -eq 0x50 -and $sig[1] -eq 0x4B -and (Get-Item $jarPath).Length -gt 10000) {
+            $jarLooksValid = $true
+        }
+    } catch {
+        $jarLooksValid = $false
+    }
+    if (-not $jarLooksValid) {
+        Warn "Existing wrapper JAR looks corrupt. Re-downloading."
+        Remove-Item $jarPath -Force -ErrorAction SilentlyContinue
     }
 }
-$env:ANDROID_HOME = $env:ANDROID_SDK_ROOT
-$env:Path = "$(Join-Path $env:ANDROID_SDK_ROOT 'platform-tools');$env:Path"
 
-if (-not (Test-Path $env:ANDROID_SDK_ROOT)) {
-    Write-Fail "Android SDK not found at $env:ANDROID_SDK_ROOT. Install Android Studio and its Android SDK."
-}
+if (-not $jarLooksValid) {
+    Warn "Wrapper JAR missing - fetching it (one time only)."
+    New-Item -ItemType Directory -Force -Path "gradle\wrapper" | Out-Null
+    
+    $gradleVer = "8.7"
+    if (Test-Path "gradle\wrapper\gradle-wrapper.properties") {
+        $m = Select-String -Path "gradle\wrapper\gradle-wrapper.properties" `
+                           -Pattern "gradle-([\d.]+)-bin" -ErrorAction SilentlyContinue
+        if ($m) { $gradleVer = $m.Matches[0].Groups[1].Value }
+    }
+    Info "Targeting Gradle $gradleVer"
 
-if (-not (Test-Path (Join-Path $env:ANDROID_SDK_ROOT "platforms\android-36\android.jar"))) {
-    Write-Fail "Android API 36 is missing. In Android Studio open Tools > SDK Manager and install Android SDK Platform 36 plus Build-Tools 36.0.0."
-}
-
-Write-Ok "Android SDK found: $env:ANDROID_SDK_ROOT"
-
-# ---- 3. Gradle wrapper bootstrap ------------------------------------------
-
-Write-Step "Checking Gradle wrapper..."
-
-$GradleVersion = "8.13"
-$WrapperBat = "gradlew.bat"
-$WrapperDirectory = "gradle\wrapper"
-$WrapperJar = Join-Path $WrapperDirectory "gradle-wrapper.jar"
-$WrapperProperties = Join-Path $WrapperDirectory "gradle-wrapper.properties"
-
-$WrapperComplete =
-    (Test-Path $WrapperBat) -and
-    (Test-Path $WrapperJar) -and
-    (Test-Path $WrapperProperties)
-
-if (-not $WrapperComplete) {
-    Write-Warn "Gradle wrapper is incomplete. Bootstrapping Gradle $GradleVersion..."
-    New-Item -ItemType Directory -Force -Path $WrapperDirectory | Out-Null
-
-    $Properties = @"
-distributionBase=GRADLE_USER_HOME
-distributionPath=wrapper/dists
-distributionUrl=https\://services.gradle.org/distributions/gradle-$GradleVersion-bin.zip
-networkTimeout=120000
-validateDistributionUrl=true
-zipStoreBase=GRADLE_USER_HOME
-zipStorePath=wrapper/dists
-"@
-    $Properties | Set-Content $WrapperProperties -Encoding ASCII
-
-    $RawBase = "https://raw.githubusercontent.com/gradle/gradle/v$GradleVersion.0"
     try {
-        Write-Warn "Downloading gradle-wrapper.jar..."
-        Invoke-WebRequest `
-            -Uri "$RawBase/gradle/wrapper/gradle-wrapper.jar" `
-            -OutFile $WrapperJar `
-            -UseBasicParsing `
-            -ErrorAction Stop
+        [Net.ServicePointManager]::SecurityProtocol =
+            [Net.SecurityProtocolType]::Tls12 -bor [Net.ServicePointManager]::SecurityProtocol
+    } catch { }
 
-        Write-Warn "Downloading gradlew.bat..."
-        Invoke-WebRequest `
-            -Uri "$RawBase/gradlew.bat" `
-            -OutFile $WrapperBat `
-            -UseBasicParsing `
-            -ErrorAction Stop
+    $got = $false
+    $jarUrl = "https://raw.githubusercontent.com/gradle/gradle/v$gradleVer/gradle/wrapper/gradle-wrapper.jar"
+    
+    try {
+        Info "Trying GitHub..."
+        Invoke-WebRequest -Uri $jarUrl -OutFile $jarPath -UseBasicParsing -TimeoutSec 60
+        if ((Get-Item $jarPath).Length -gt 10000) {
+            $got = $true
+            Ok "Downloaded gradle-wrapper.jar."
+        }
     } catch {
-        Write-Warn "Direct wrapper download failed. Using the full Gradle distribution..."
+        Info "GitHub route failed: $($_.Exception.Message)"
+    }
 
-        $BootstrapRoot = Join-Path $env:TEMP "swingframe-gradle-bootstrap"
-        $ZipPath = Join-Path $BootstrapRoot "gradle-$GradleVersion-bin.zip"
-        $ExtractPath = Join-Path $BootstrapRoot "distribution"
-        $TemporaryProject = Join-Path $BootstrapRoot "wrapper-project"
-
-        Remove-Item $BootstrapRoot -Recurse -Force -ErrorAction SilentlyContinue
-        New-Item -ItemType Directory -Force -Path $ExtractPath | Out-Null
-        New-Item -ItemType Directory -Force -Path $TemporaryProject | Out-Null
-
-        Invoke-WebRequest `
-            -Uri "https://services.gradle.org/distributions/gradle-$GradleVersion-bin.zip" `
-            -OutFile $ZipPath `
-            -UseBasicParsing
-        Expand-Archive -Path $ZipPath -DestinationPath $ExtractPath -Force
-        "rootProject.name = 'wrapper-bootstrap'" |
-            Set-Content (Join-Path $TemporaryProject "settings.gradle") -Encoding ASCII
-
-        $GradleBat = Join-Path $ExtractPath "gradle-$GradleVersion\bin\gradle.bat"
-        Push-Location $TemporaryProject
+    if (-not $got) {
+        Warn "Falling back to the full Gradle distribution (~130 MB)."
+        $zip = "$env:TEMP\gradle-$gradleVer-bin.zip"
+        $ex  = "$env:TEMP\gradle-$gradleVer-extract"
         try {
-            & $GradleBat --no-daemon wrapper --gradle-version $GradleVersion --distribution-type bin
-            if ($LASTEXITCODE -ne 0) {
-                Write-Fail "Gradle wrapper bootstrap failed."
-            }
+            Invoke-WebRequest -Uri "https://services.gradle.org/distributions/gradle-$gradleVer-bin.zip" `
+                              -OutFile $zip -UseBasicParsing -TimeoutSec 600
+            Expand-Archive -Path $zip -DestinationPath $ex -Force
+            
+            $found = Get-ChildItem $ex -Recurse -Filter "gradle-wrapper.jar" -ErrorAction SilentlyContinue |
+                     Select-Object -First 1
+            if (-not $found) { Die "gradle-wrapper.jar not found inside the distribution." }
+            
+            Copy-Item $found.FullName $jarPath -Force
+            Ok "Extracted gradle-wrapper.jar."
+        } catch {
+            Die "Could not obtain gradle-wrapper.jar: $($_.Exception.Message)" `
+                "Check your internet connection, then re-run."
         } finally {
-            Pop-Location
+            Remove-Item $zip -Force -ErrorAction SilentlyContinue
+            Remove-Item $ex -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+} else {
+    Ok "Wrapper JAR present."
+}
+
+if (-not (Test-Path "gradlew.bat")) { Die "gradlew.bat is missing." "It should be committed with the project. Re-pull the repo." }
+
+# ------------------------------------------------------------------ 3. clean
+if ($Clean) {
+    Step "Cleaning..."
+    & .\gradlew.bat clean --console=plain
+    Get-ChildItem -Path . -Include "build" -Recurse -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch "\\.git\\" } |
+        ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    Ok "Build directories removed."
+}
+
+# ------------------------------------------------------------------ 4. build
+Step "Building ($Variant)... first run pulls Gradle + dependencies, be patient."
+
+$gradleArgs = @($Task, "--console=plain", "--warning-mode=summary")
+if ($Offline) { $gradleArgs += "--offline" }
+
+& .\gradlew.bat @gradleArgs
+$code = $LASTEXITCODE
+
+if ($code -ne 0) {
+    Write-Host ""
+    Write-Host "[ !! ] Build failed (exit $code)." -ForegroundColor Red
+    Write-Host ""
+    Write-Host "  Common causes, in order of likelihood:" -ForegroundColor Yellow
+    Write-Host "   1. Wrong JDK -> Android 13+ / AGP 8+ wants JDK 17." -ForegroundColor Gray
+    Write-Host "   2. 'SDK location not found' -> delete local.properties and re-run." -ForegroundColor Gray
+    Write-Host "   3. 'licenses have not been accepted' -> sdkmanager --licenses" -ForegroundColor Gray
+    Write-Host "   4. Out of memory -> raise org.gradle.jvmargs in gradle.properties." -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  For the full story:  .\gradlew.bat $Task --stacktrace" -ForegroundColor Cyan
+    Write-Host ""
+    exit 1
+}
+
+# -------------------------------------------------------------- 5. find APK
+Step "Locating APK..."
+$apk = Get-ChildItem -Path "app\build\outputs\apk\$Variant" -Filter "*.apk" -Recurse -ErrorAction SilentlyContinue |
+       Sort-Object LastWriteTime -Descending | Select-Object -First 1
+
+if (-not $apk) { Die "No APK produced, despite the build reporting success." }
+
+$sizeMb = [math]::Round($apk.Length / 1MB, 2)
+Ok "APK: $($apk.Name)  ($sizeMb MB)"
+Info $apk.FullName
+
+# ---------------------------------------------------------------- 6. install
+$installed = $false
+
+if (-not $NoInstall) {
+    Step "Looking for a connected phone..."
+    $sdkDir = ($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT, "$env:LOCALAPPDATA\Android\Sdk" |
+               Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1)
+               
+    $adb = if ($sdkDir) { Join-Path $sdkDir "platform-tools\adb.exe" } else { $null }
+
+    if (-not ($adb -and (Test-Path $adb))) {
+        $c = Get-Command adb -ErrorAction SilentlyContinue
+        if ($c) { $adb = $c.Source } else { $adb = $null }
+    }
+
+    if ($adb) {
+        function Invoke-Adb {
+            param([string[]]$AdbArgs)
+            $prev = $ErrorActionPreference
+            $ErrorActionPreference = "SilentlyContinue"
+            $out = & $adb @AdbArgs 2>&1 | ForEach-Object { "$_" }
+            $script:AdbExit = $LASTEXITCODE
+            $ErrorActionPreference = $prev
+            return @($out)
         }
 
-        Copy-Item (Join-Path $TemporaryProject "gradlew.bat") $WrapperBat -Force
-        Copy-Item (Join-Path $TemporaryProject "gradle\wrapper\gradle-wrapper.jar") $WrapperJar -Force
-        Copy-Item (Join-Path $TemporaryProject "gradle\wrapper\gradle-wrapper.properties") $WrapperProperties -Force
-        Remove-Item $BootstrapRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Info "Starting adb server..."
+        $null = Invoke-Adb @("start-server")
+        
+        $devRaw   = Invoke-Adb @("devices")
+        $devLines = @($devRaw | Select-Object -Skip 1 | Where-Object { $_.Trim() -ne "" })
+        
+        $ready        = @($devLines | Where-Object { $_ -match "\sdevice$" })
+        $unauthorized = @($devLines | Where-Object { $_ -match "unauthorized" })
+        $offline      = @($devLines | Where-Object { $_ -match "offline" })
+
+        if ($ready.Count -gt 0) {
+            Ok "Device ready: $($ready[0].Trim())"
+            Step "Installing..."
+            
+            $installOut = Invoke-Adb @("install", "-r", "-d", $apk.FullName)
+            foreach ($l in $installOut) { if ($l.Trim()) { Info $l.Trim() } }
+
+            if (($installOut -join " ") -match "Success") {
+                $installed = $true
+                Ok "Installed."
+                
+                Step "Launching..."
+                $null = Invoke-Adb @("shell", "monkey", "-p", $AppId, "-c", "android.intent.category.LAUNCHER", "1")
+                Ok "Launched on device."
+            } else {
+                Warn "adb install did not report Success."
+                if (($installOut -join " ") -match "INSTALL_FAILED_UPDATE_INCOMPATIBLE|signatures do not match") {
+                    Info "A different build of $AppId is already installed."
+                    Info "Uninstall it first:  adb uninstall $AppId"
+                } elseif (($installOut -join " ") -match "INSTALL_FAILED_INSUFFICIENT_STORAGE") {
+                    Info "Not enough free space on the phone."
+                }
+                Info "Falling back to manual transfer."
+            }
+        } elseif ($unauthorized.Count -gt 0) {
+            Warn "Device is connected but UNAUTHORIZED."
+            Info "Unlock the phone and tap 'Allow' on the USB debugging prompt."
+        } elseif ($offline.Count -gt 0) {
+            Warn "Device reports offline."
+            Info "Try: adb kill-server   then replug the cable."
+        } else {
+            Warn "No device detected over USB."
+            Info "Enable Developer Options -> USB debugging, plug in a DATA cable, then tap Allow."
+        }
+    } else {
+        Warn "adb not found."
     }
+}
 
-    if (-not (Test-Path $WrapperBat) -or -not (Test-Path $WrapperJar)) {
-        Write-Fail "Could not create the Gradle wrapper."
+if (-not $installed) {
+    Step "Opening the APK folder for manual transfer..."
+    Start-Process explorer.exe -ArgumentList "/select`"$($apk.FullName)`""
+    Write-Host "`n  Send the APK to your phone via cable or Drive, then tap it." -ForegroundColor Yellow
+}
+
+# ----------------------------------------------------------------- 7. done
+$sw.Stop()
+Write-Host ""
+Write-Host ("-" * 62) -ForegroundColor DarkGray
+Write-Host "  DONE in $([math]::Round($sw.Elapsed.TotalSeconds,1))s  |  $Variant  |  $sizeMb MB" -ForegroundColor Magenta
+Write-Host ("-" * 62) -ForegroundColor DarkGray
+
+# --------------------------------------------------------------- 8. logcat
+if ($installed -and -not $NoLogcat) {
+    Write-Host "`n  Tailing logcat for $AppId. Ctrl+C to stop.`n" -ForegroundColor Cyan
+    
+    $ErrorActionPreference = "SilentlyContinue"
+    Start-Sleep -Seconds 2
+    
+    $pidRaw = ""
+    try {
+        $pidRaw = (& $adb shell pidof -s $AppId 2>&1 | ForEach-Object { "$_" }) -join ""
+        $pidRaw = $pidRaw.Trim()
+    } catch { }
+
+    if ($pidRaw -match '^\d+$') {
+        & $adb logcat "--pid=$pidRaw"
+    } else {
+        Info "Could not resolve the app PID; tailing everything instead."
+        & $adb logcat -v brief
     }
-    Write-Ok "Gradle wrapper ready."
-} else {
-    Write-Ok "Gradle wrapper found."
 }
-
-# ---- 4. Build --------------------------------------------------------------
-
-Write-Step "Building SwingFrame APK (the first run downloads Gradle and dependencies)..."
-
-& .\gradlew.bat testDebugUnitTest lintDebug assembleDebug --stacktrace
-if ($LASTEXITCODE -ne 0) {
-    Write-Fail "Build failed. Copy the first compiler error and the 'What went wrong' section."
-}
-
-# ---- 5. Find and rename APK ------------------------------------------------
-
-Write-Step "Locating APK..."
-
-$BuiltApk = Get-ChildItem `
-    -Path "app\build\outputs\apk\debug" `
-    -Filter "*.apk" `
-    -File `
-    -ErrorAction SilentlyContinue |
-    Select-Object -First 1
-
-if (-not $BuiltApk) {
-    Write-Fail "APK not found. The build may have failed without producing an output."
-}
-
-$ArtifactDirectory = Join-Path (Get-Location) "artifacts"
-$FinalApk = Join-Path $ArtifactDirectory "SwingFrame.apk"
-New-Item -ItemType Directory -Force -Path $ArtifactDirectory | Out-Null
-Copy-Item $BuiltApk.FullName $FinalApk -Force
-
-Write-Ok "APK ready: $FinalApk"
-$Hash = Get-FileHash $FinalApk -Algorithm SHA256
-Write-Host "[ SHA256 ] $($Hash.Hash)" -ForegroundColor DarkGray
-
-# ---- 6. Open output folder -------------------------------------------------
-
-Write-Step "Opening APK folder..."
-Start-Process explorer.exe -ArgumentList "/select,`"$FinalApk`""
-
-Write-Host "`n[ DONE ] SwingFrame.apk is selected in Explorer." -ForegroundColor Magenta
-Write-Host "         Copy it to your phone and open it to install." -ForegroundColor Magenta
-Write-Host "         Android may ask you to enable 'Install unknown apps' for Files, Drive, or your browser.`n" -ForegroundColor Yellow
