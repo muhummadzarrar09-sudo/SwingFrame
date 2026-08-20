@@ -12,11 +12,24 @@ import app.swingframe.domain.ai.SwingSkeleton
 import app.swingframe.ui.theme.MoonstoneBlue
 import app.swingframe.ui.theme.MustardGreen
 
+/**
+ * Draws the detected skeleton over the video.
+ *
+ * Skeleton coordinates are normalized over the UPRIGHT VIDEO frame. PlayerView renders
+ * with aspect-fit, so when the video aspect differs from the overlay canvas there are
+ * letterbox bars; the mapping below skips those bars or the skeleton would be stretched
+ * or squashed against the visible video content.
+ *
+ * @param videoWidth/videoHeight display dimensions of the video as reported by the player
+ *   (after rotation); pass 0/0 to fall back to full-canvas mapping.
+ */
 @Composable
 fun SkeletonOverlay(
     skeleton: SwingSkeleton?,
     modifier: Modifier = Modifier,
-    drawSpineLine: Boolean = true
+    drawSpineLine: Boolean = true,
+    videoWidth: Int = 0,
+    videoHeight: Int = 0
 ) {
     if (skeleton == null) return
 
@@ -24,8 +37,26 @@ fun SkeletonOverlay(
         val w = size.width
         val h = size.height
 
-        // Helper to convert normalized 0.0-1.0 coords back to screen pixels
-        fun PoseJoint.toOffset(): Offset = Offset(x * w, y * h)
+        // Letterbox-aware mapping: normalized video coordinates -> canvas pixels
+        val toCanvas: (Float, Float) -> Offset = if (videoWidth > 0 && videoHeight > 0) {
+            val videoAspect = videoWidth.toFloat() / videoHeight.toFloat()
+            val canvasAspect = w / h
+            if (videoAspect > canvasAspect) {
+                // Video is wider than the canvas -> pillarbox bars on left/right
+                val drawWidth = h * videoAspect
+                val leftInset = (w - drawWidth) / 2f
+                { x, y -> Offset(leftInset + x * drawWidth, y * h) }
+            } else {
+                // Video is taller than the canvas -> letterbox bars on top/bottom
+                val drawHeight = w / videoAspect
+                val topInset = (h - drawHeight) / 2f
+                { x, y -> Offset(x * w, topInset + y * drawHeight) }
+            }
+        } else {
+            { x, y -> Offset(x * w, y * h) }
+        }
+
+        fun PoseJoint.toOffset(): Offset = toCanvas(x, y)
 
         fun drawBone(joint1: PoseJoint?, joint2: PoseJoint?, color: Color = MoonstoneBlue) {
             if (joint1 != null && joint2 != null) {
@@ -49,8 +80,6 @@ fun SkeletonOverlay(
             }
         }
 
-        // Draw the main skeletal structure
-        
         // Arms
         drawBone(skeleton.leftShoulder, skeleton.leftElbow)
         drawBone(skeleton.leftElbow, skeleton.leftWrist)
@@ -69,31 +98,23 @@ fun SkeletonOverlay(
         drawBone(skeleton.rightHip, skeleton.rightKnee)
         drawBone(skeleton.rightKnee, skeleton.rightAnkle)
 
-        // Draw the Analytics: Spine Angle Line (Mustard Green)
+        // Analytics: spine line (Mustard Green) — reuses SwingSkeleton's midpoint math so
+        // the drawn line and the analyzed angle can never disagree.
         if (drawSpineLine) {
-            val ls = skeleton.leftShoulder
-            val rs = skeleton.rightShoulder
-            val lh = skeleton.leftHip
-            val rh = skeleton.rightHip
-
-            if (ls != null && rs != null && lh != null && rh != null) {
-                val midShoulderX = ((ls.x + rs.x) / 2) * w
-                val midShoulderY = ((ls.y + rs.y) / 2) * h
-                val midHipX = ((lh.x + rh.x) / 2) * w
-                val midHipY = ((lh.y + rh.y) / 2) * h
-
-                // Draw a thick line connecting mid-shoulders to mid-hips
+            val midShoulder = skeleton.midShoulder
+            val midHip = skeleton.midHip
+            if (midShoulder != null && midHip != null) {
                 drawLine(
                     color = MustardGreen,
-                    start = Offset(midShoulderX, midShoulderY),
-                    end = Offset(midHipX, midHipY),
+                    start = midShoulder.toOffset(),
+                    end = midHip.toOffset(),
                     strokeWidth = 10f,
                     cap = StrokeCap.Round
                 )
             }
         }
 
-        // Draw the physical points on top
+        // Joint points on top
         listOf(
             skeleton.leftShoulder, skeleton.rightShoulder,
             skeleton.leftElbow, skeleton.rightElbow,

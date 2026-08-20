@@ -1,17 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
-    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- NOTE: the app intentionally declares NO network, camera, or media permissions.
+         Videos are imported through the system photo picker (SAF), which needs no
+         permission, and AI runs on-device once the ML Kit model is installed. -->
 
+    <!-- allowBackup is off on purpose: the app stores nothing yet, and the product is
+         privacy-first. If local persistence (Room, Phase 3) is added later, flip this on
+         with android:dataExtractionRules / fullBackupContent excluding the database. -->
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="SwingFrame"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.NoTitleBar">
-        
+
         <!-- ML Kit Offline Model Declaration -->
         <meta-data
             android:name="com.google.mlkit.vision.DEPENDENCIES"

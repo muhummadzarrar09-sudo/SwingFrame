@@ -1,18 +1,19 @@
 package app.swingframe.domain.ai
 
 import android.graphics.Bitmap
+import android.util.Log
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.pose.Pose
 import com.google.mlkit.vision.pose.PoseDetection
 import com.google.mlkit.vision.pose.PoseDetector
 import com.google.mlkit.vision.pose.PoseLandmark
 import com.google.mlkit.vision.pose.accurate.AccuratePoseDetectorOptions
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.tasks.await
 
 class OnDevicePoseAnalyzer {
 
-    // Using the "Accurate" model for golf swings rather than "Fast", 
-    // because we need exact joint mapping to draw lines accurately.
+    // "Accurate" model for golf swings: we need exact joint mapping for the overlay.
     private val options = AccuratePoseDetectorOptions.Builder()
         .setDetectorMode(AccuratePoseDetectorOptions.SINGLE_IMAGE_MODE)
         .build()
@@ -20,18 +21,36 @@ class OnDevicePoseAnalyzer {
     private val poseDetector: PoseDetector = PoseDetection.getClient(options)
 
     /**
-     * Takes a single raw video frame bitmap and runs ML Kit locally to extract joints.
+     * Runs ML Kit locally on a single frame.
+     *
+     * @param rotationDegrees clockwise rotation of the frame as reported by
+     *   MediaMetadataRetriever's METADATA_KEY_VIDEO_ROTATION (0/90/180/270).
+     *   MediaMetadataRetriever returns frames in the ENCODED orientation without applying
+     *   this metadata, while ExoPlayer DOES rotate during playback — so the rotation must
+     *   be forwarded here or the skeleton would land 90 degrees off the visible video.
      */
-    suspend fun analyzeFrame(bitmap: Bitmap): SwingSkeleton? {
-        val image = InputImage.fromBitmap(bitmap, 0)
-        
+    suspend fun analyzeFrame(bitmap: Bitmap, rotationDegrees: Int = 0): SwingSkeleton? {
+        val rotation = normalizeRotation(rotationDegrees)
+        val image = InputImage.fromBitmap(bitmap, rotation)
+
+        // ML Kit returns landmarks in the coordinate space of the ROTATED (upright) image,
+        // so normalization must use the rotated dimensions, not the raw bitmap dimensions.
+        val rotatedWidth = if (rotation % 180 == 0) bitmap.width else bitmap.height
+        val rotatedHeight = if (rotation % 180 == 0) bitmap.height else bitmap.width
+
         return try {
             val pose = poseDetector.process(image).await()
-            mapToSwingSkeleton(pose, bitmap.width, bitmap.height)
+            mapToSwingSkeleton(pose, rotatedWidth, rotatedHeight)
+        } catch (e: CancellationException) {
+            throw e // never swallow cancellation
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "Pose detection failed", e)
             null
         }
+    }
+
+    fun close() {
+        poseDetector.close()
     }
 
     private fun mapToSwingSkeleton(pose: Pose, imageWidth: Int, imageHeight: Int): SwingSkeleton? {
@@ -39,11 +58,10 @@ class OnDevicePoseAnalyzer {
 
         fun getJoint(type: Int): PoseJoint? {
             val landmark = pose.getPoseLandmark(type) ?: return null
-            // ML Kit can sometimes return very low confidence points. We filter out the junk.
+            // Filter out low-confidence points so the overlay doesn't draw junk.
             if (landmark.inFrameLikelihood < 0.5f) return null
-            
-            // Normalize coordinates to 0.0 -> 1.0 based on image size 
-            // so we can draw it perfectly regardless of screen size.
+
+            // Normalized 0.0 -> 1.0 coordinates so the overlay can draw at any screen size.
             return PoseJoint(
                 x = landmark.position.x / imageWidth,
                 y = landmark.position.y / imageHeight,
@@ -65,5 +83,20 @@ class OnDevicePoseAnalyzer {
             leftAnkle = getJoint(PoseLandmark.LEFT_ANKLE),
             rightAnkle = getJoint(PoseLandmark.RIGHT_ANKLE)
         )
+    }
+
+    /** Clamps any input to the 0/90/180/270 quadrant ML Kit accepts. */
+    private fun normalizeRotation(rotationDegrees: Int): Int {
+        val normalized = ((rotationDegrees % 360) + 360) % 360
+        return when (normalized) {
+            in 0..89 -> 0
+            in 90..179 -> 90
+            in 180..269 -> 180
+            else -> 270
+        }
+    }
+
+    private companion object {
+        const val TAG = "OnDevicePoseAnalyzer"
     }
 }

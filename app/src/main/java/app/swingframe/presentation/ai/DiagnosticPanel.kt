@@ -15,6 +15,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.swingframe.domain.ai.AnalysisQuality
 import app.swingframe.domain.ai.FlawSeverity
 import app.swingframe.domain.ai.SwingReport
 import app.swingframe.ui.theme.BackgroundDark
@@ -58,67 +59,108 @@ fun DiagnosticPanel(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Overall Score
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(BackgroundDark)
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text("SWING SCORE", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
-            Text(
-                text = "${report.score}",
-                color = if (report.score > 80) MustardGreen else if (report.score > 60) DeepSpaceSparkle else PhthaloGreen,
-                fontSize = 32.sp,
-                fontWeight = FontWeight.Black
+        // Never present a score the data cannot support.
+        when (report.quality) {
+            AnalysisQuality.RELIABLE -> ReliableReport(report)
+            AnalysisQuality.INSUFFICIENT_DATA -> QualityMessage(
+                title = "ANALYSIS INCONCLUSIVE",
+                message = report.message ?: "Not enough pose data was captured for a reliable diagnosis."
+            )
+            AnalysisQuality.NO_DATA -> QualityMessage(
+                title = "NO ANALYSIS AVAILABLE",
+                message = report.message ?: "No pose data was captured from this video."
             )
         }
+    }
+}
 
-        Spacer(modifier = Modifier.height(16.dp))
+@Composable
+private fun ReliableReport(report: SwingReport) {
+    // Overall Score
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(BackgroundDark)
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text("SWING SCORE", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
+        Text(
+            text = "${report.score}",
+            color = if (report.score > 80) MustardGreen else if (report.score > 60) DeepSpaceSparkle else PhthaloGreen,
+            fontSize = 32.sp,
+            fontWeight = FontWeight.Black
+        )
+    }
 
-        // Flaw List
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items(report.flaws) { flaw ->
-                val cardColor = when (flaw.severity) {
-                    FlawSeverity.CRITICAL -> PhthaloGreen.copy(alpha = 0.3f)
-                    FlawSeverity.WARNING -> DeepSpaceSparkle.copy(alpha = 0.3f)
-                    FlawSeverity.INFO -> BackgroundDark
-                }
-                
-                val textColor = when (flaw.severity) {
-                    FlawSeverity.CRITICAL -> MaterialTheme.colorScheme.error
-                    FlawSeverity.WARNING -> MaterialTheme.colorScheme.tertiary
-                    FlawSeverity.INFO -> MaterialTheme.colorScheme.primary
-                }
+    Spacer(modifier = Modifier.height(16.dp))
 
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(cardColor)
-                        .padding(12.dp)
-                ) {
-                    Text(
-                        text = flaw.name.uppercase(),
-                        color = textColor,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = flaw.description,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontSize = 12.sp,
-                        lineHeight = 16.sp
-                    )
-                }
+    // Flaw List
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        items(report.flaws) { flaw ->
+            val cardColor = when (flaw.severity) {
+                FlawSeverity.CRITICAL -> PhthaloGreen.copy(alpha = 0.3f)
+                FlawSeverity.WARNING -> DeepSpaceSparkle.copy(alpha = 0.3f)
+                FlawSeverity.INFO -> BackgroundDark
+            }
+
+            val textColor = when (flaw.severity) {
+                FlawSeverity.CRITICAL -> MaterialTheme.colorScheme.error
+                FlawSeverity.WARNING -> MaterialTheme.colorScheme.tertiary
+                FlawSeverity.INFO -> MaterialTheme.colorScheme.primary
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(cardColor)
+                    .padding(12.dp)
+            ) {
+                Text(
+                    text = flaw.name.uppercase(),
+                    color = textColor,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = flaw.description,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                )
             }
         }
+    }
+}
+
+@Composable
+private fun QualityMessage(title: String, message: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(BackgroundDark)
+            .padding(16.dp)
+    ) {
+        Text(
+            text = title,
+            color = MaterialTheme.colorScheme.error,
+            fontWeight = FontWeight.Black,
+            fontSize = 16.sp
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = message,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontSize = 13.sp,
+            lineHeight = 18.sp
+        )
     }
 }

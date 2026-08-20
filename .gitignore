@@ -1,0 +1,23 @@
+# --- Android / Gradle ---
+local.properties
+.gradle/
+build/
+app/build/
+captures/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# --- IDE ---
+.idea/
+*.iml
+.vscode/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Logs / crash dumps ---
+*.log
+hs_err_pid*
