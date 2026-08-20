@@ -22,7 +22,6 @@ param(
 $ErrorActionPreference = "Stop"
 
 $AppId   = "app.swingframe"
-$Root    = Split-Path $PSScriptRoot -Parent
 $Variant = if ($Release) { "release" } else { "debug" }
 $Task    = if ($Release) { "assembleRelease" } else { "assembleDebug" }
 
@@ -35,6 +34,21 @@ function Die  {
     Write-Host "`n[ !! ] $m" -ForegroundColor Red
     if ($hint) { Write-Host "       $hint" -ForegroundColor Yellow }
     exit 1
+}
+
+# Structural validation (ZIP magic bytes) for a downloaded wrapper JAR. This is a sanity
+# check only - see the checksum warning next to the download for the remaining gap.
+function Test-ZipSignature {
+    param([string]$Path)
+    try {
+        $fs = [System.IO.File]::OpenRead($Path)
+        $sig = New-Object byte[] 4
+        $null = $fs.Read($sig, 0, 4)
+        $fs.Close()
+        return ($sig[0] -eq 0x50 -and $sig[1] -eq 0x4B -and $sig[2] -eq 0x03 -and $sig[3] -eq 0x04)
+    } catch {
+        return $false
+    }
 }
 
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -83,17 +97,7 @@ $jarPath = "gradle\wrapper\gradle-wrapper.jar"
 $jarLooksValid = $false
 
 if (Test-Path $jarPath) {
-    try {
-        $fs = [System.IO.File]::OpenRead((Resolve-Path $jarPath))
-        $sig = New-Object byte[] 2
-        $null = $fs.Read($sig, 0, 2)
-        $fs.Close()
-        if ($sig[0] -eq 0x50 -and $sig[1] -eq 0x4B -and (Get-Item $jarPath).Length -gt 10000) {
-            $jarLooksValid = $true
-        }
-    } catch {
-        $jarLooksValid = $false
-    }
+    $jarLooksValid = ((Get-Item $jarPath).Length -gt 10000) -and (Test-ZipSignature $jarPath)
     if (-not $jarLooksValid) {
         Warn "Existing wrapper JAR looks corrupt. Re-downloading."
         Remove-Item $jarPath -Force -ErrorAction SilentlyContinue
@@ -123,9 +127,11 @@ if (-not $jarLooksValid) {
     try {
         Info "Trying GitHub..."
         Invoke-WebRequest -Uri $jarUrl -OutFile $jarPath -UseBasicParsing -TimeoutSec 60
-        if ((Get-Item $jarPath).Length -gt 10000) {
+        if (((Get-Item $jarPath).Length -gt 10000) -and (Test-ZipSignature $jarPath)) {
             $got = $true
             Ok "Downloaded gradle-wrapper.jar."
+            Warn "NOTE: the wrapper JAR is validated structurally (ZIP magic) but not cryptographically."
+            Warn "For supply-chain safety, pin the known SHA-256 of the gradle $gradleVer wrapper JAR in this script."
         }
     } catch {
         Info "GitHub route failed: $($_.Exception.Message)"
@@ -173,7 +179,7 @@ if ($Clean) {
 # ------------------------------------------------------------------ 4. build
 Step "Building ($Variant)... first run pulls Gradle + dependencies, be patient."
 
-$gradleArgs = @($Task, "--console=plain", "--warning-mode=summary")
+$gradleArgs = @($Task, "testDebugUnitTest", "--console=plain", "--warning-mode=summary")
 if ($Offline) { $gradleArgs += "--offline" }
 
 & .\gradlew.bat @gradleArgs
