@@ -18,7 +18,7 @@ private val SwingFrameColorScheme = darkColorScheme(
     surface = SurfaceDark,
     onBackground = LightGray,
     onSurface = LightGray,
-    error = PhthaloGreen // Using this dark green for stylistic contrast
+    error = ErrorRed
 )
 
 @Composable
@@ -29,9 +29,12 @@ fun SwingFrameTheme(
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
-            val window = (view.context as Activity).window
-            window.statusBarColor = colorScheme.background.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = false
+            // Safe-cast: previews or unusual contexts can supply a non-Activity context.
+            val window = (view.context as? Activity)?.window
+            if (window != null) {
+                window.statusBarColor = colorScheme.background.toArgb()
+                WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = false
+            }
         }
     }
 

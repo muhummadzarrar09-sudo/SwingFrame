@@ -7,29 +7,28 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.ui.PlayerView
-import app.swingframe.ui.theme.*
-
-import app.swingframe.presentation.ai.SkeletonOverlay
-
-import kotlin.math.abs
-
 import app.swingframe.presentation.ai.DiagnosticPanel
-import app.swingframe.domain.ai.SwingReport
+import app.swingframe.presentation.ai.SkeletonOverlay
+import app.swingframe.ui.theme.BackgroundDark
+import app.swingframe.ui.theme.LightGray
+import app.swingframe.ui.theme.MoonstoneBlue
+import app.swingframe.ui.theme.MustardGreen
+import app.swingframe.ui.theme.SurfaceDark
+import app.swingframe.ui.util.formatTime
 
 @Composable
 fun VideoPlayerScreen(
@@ -44,53 +43,15 @@ fun VideoPlayerScreen(
     }
 
     if (state.isPreProcessing) {
-        // --- THE AI SPLASH LOADING SCREEN ---
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(BackgroundDark),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(
-                text = "INITIALIZING AI ENGINE",
-                color = MoonstoneBlue,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Black,
-                letterSpacing = 2.sp
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "ANALYZING SWING BIOMECHANICS...",
-                color = LightGray.copy(alpha = 0.7f),
-                fontSize = 12.sp,
-                letterSpacing = 1.sp
-            )
-            Spacer(modifier = Modifier.height(32.dp))
-            LinearProgressIndicator(
-                progress = { state.preProcessProgress },
-                modifier = Modifier
-                    .fillMaxWidth(0.6f)
-                    .height(8.dp)
-                    .clip(RoundedCornerShape(4.dp)),
-                color = MustardGreen,
-                trackColor = SurfaceDark
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                text = "${(state.preProcessProgress * 100).toInt()}%",
-                color = MustardGreen,
-                fontWeight = FontWeight.Bold
-            )
-        }
-        return // Do not render the video player behind the splash screen
+        PreProcessingScreen(progress = state.preProcessProgress)
+        return
     }
 
-    // --- THE STANDARD VIDEO PLAYER UI ---
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
+            .background(MaterialTheme.colorScheme.background)
+            .safeDrawingPadding(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         // Top Bar
@@ -108,7 +69,7 @@ fun VideoPlayerScreen(
                 fontWeight = FontWeight.Black,
                 letterSpacing = 2.sp
             )
-            
+
             Button(
                 onClick = { videoPickerLauncher.launch("video/*") },
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
@@ -145,56 +106,124 @@ fun VideoPlayerScreen(
                     },
                     modifier = Modifier.fillMaxSize()
                 )
-                
-                // Phase 2: AI Skeleton Layer (Pulled from Cache!)
+
+                // Phase 2: AI Skeleton Layer (cached timeline, O(log n) nearest-frame lookup)
                 if (state.isAiEnabled) {
-                    val currentSkeleton = state.cachedSkeletons.entries
-                        .minByOrNull { abs(it.key - state.currentPosition) }?.value
-                        
-                    SkeletonOverlay(skeleton = currentSkeleton)
+                    val currentSkeleton = state.skeletonTimeline.skeletonAt(state.currentPosition)
+                    SkeletonOverlay(
+                        skeleton = currentSkeleton,
+                        videoWidth = state.videoWidth,
+                        videoHeight = state.videoHeight
+                    )
                 }
             }
         }
 
+        // Surface playback/processing failures instead of a silent black screen
+        state.errorMessage?.let { message ->
+            ErrorBanner(
+                message = message,
+                onDismiss = { viewModel.onIntent(VideoPlayerIntent.ClearError) }
+            )
+        }
+
         // Custom Controller Area
         if (state.videoUri != null) {
-            
+            val report = state.aiReport
+
             // Phase 2: Show Diagnostic Panel Overlay if open
-            if (state.isDiagnosticPanelOpen && state.aiReport != null) {
-                Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.BottomCenter) {
+            if (state.isDiagnosticPanelOpen && report != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.BottomCenter
+                ) {
                     DiagnosticPanel(
-                        report = state.aiReport!!,
+                        report = report,
                         onClose = { viewModel.onIntent(VideoPlayerIntent.ToggleDiagnosticPanel) }
                     )
                 }
-            } else {
-                Spacer(modifier = Modifier.weight(0.01f)) // Just to keep layout balanced when closed
             }
-
-            // Temporary Trim UI integration for MVP testing
-            var startTrim by remember { mutableStateOf(0L) }
-            var endTrim by remember { mutableStateOf(state.duration) }
-            
-            // Sync end trim when duration loads
-            LaunchedEffect(state.duration) {
-                if (endTrim == 0L && state.duration > 0L) {
-                    endTrim = state.duration
-                }
-            }
-
-            app.swingframe.presentation.trim.RangeSliderTrimmer(
-                duration = state.duration,
-                startPosition = startTrim,
-                endPosition = endTrim,
-                onStartChange = { startTrim = it },
-                onEndChange = { endTrim = it }
-            )
 
             CustomVideoController(
                 state = state,
                 onIntent = { viewModel.onIntent(it) }
             )
         }
+    }
+}
+
+@Composable
+private fun PreProcessingScreen(progress: Float) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(BackgroundDark)
+            .safeDrawingPadding(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            text = "INITIALIZING AI ENGINE",
+            color = MoonstoneBlue,
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Black,
+            letterSpacing = 2.sp
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "ANALYZING SWING BIOMECHANICS...",
+            color = LightGray.copy(alpha = 0.7f),
+            fontSize = 12.sp,
+            letterSpacing = 1.sp
+        )
+        Spacer(modifier = Modifier.height(32.dp))
+        LinearProgressIndicator(
+            progress = { progress },
+            modifier = Modifier
+                .fillMaxWidth(0.6f)
+                .height(8.dp)
+                .clip(RoundedCornerShape(4.dp)),
+            color = MustardGreen,
+            trackColor = SurfaceDark
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = "${(progress * 100).toInt()}%",
+            color = MustardGreen,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+@Composable
+private fun ErrorBanner(message: String, onDismiss: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.errorContainer)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = message,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            fontSize = 12.sp,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = "DISMISS",
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier
+                .clickable { onDismiss() }
+                .padding(start = 12.dp)
+        )
     }
 }
 
@@ -290,7 +319,7 @@ fun CustomVideoController(
                 fontSize = 12.sp,
                 modifier = Modifier.clickable { onIntent(VideoPlayerIntent.ToggleAi) }
             )
-            
+
             // Diagnostics Button
             if (state.aiReport != null) {
                 Text(
@@ -303,12 +332,4 @@ fun CustomVideoController(
             }
         }
     }
-}
-
-private fun formatTime(ms: Long): String {
-    val totalSeconds = ms / 1000
-    val minutes = totalSeconds / 60
-    val seconds = totalSeconds % 60
-    val milliseconds = (ms % 1000) / 10 // showing two digits for ms
-    return String.format("%02d:%02d.%02d", minutes, seconds, milliseconds)
 }
