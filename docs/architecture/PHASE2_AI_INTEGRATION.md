@@ -1,5 +1,12 @@
 # Phase 2: Wiring the AI Core to the Video Engine
 
+> **Status (2026-07): superseded in part.** This was the Phase 2 blueprint. The shipped
+> implementation (see `VideoPreProcessor`, `OnDevicePoseAnalyzer`, `SkeletonTimeline`)
+> pre-processes the whole video once — downscaled to <= 640 px, sampled at ~10 fps,
+> rotation-aware, capped at 600 frames — and serves skeletons from a cached,
+> binary-searchable timeline. The "analyze in real time while playing" loop described
+> below was dropped for performance and memory reasons.
+
 Now that we have both the **Video Engine** (Phase 1) and the **AI Core** (Phase 1.5) built, Phase 2 is where we make them talk to each other. Here is the exact blueprint for how we will map the `OnDevicePoseAnalyzer` to the `VideoPlayerViewModel` without lagging the user's phone.
 
 ## 1. Frame Extraction (The Bridge)

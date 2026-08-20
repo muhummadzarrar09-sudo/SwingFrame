@@ -2,7 +2,7 @@
 
 ## Phase 1: The Core Foundation (Playback & Analysis)
 *   **Precision Slow-Mo Engine:** Frame-by-frame scrubbable video playback with ultra-fine control to pinpoint the exact moment of impact.
-*   **On-Device Pose Tracking:** Offline AI (ML Kit) maps 33 body joints in real-time to visualize spine angle, hip rotation, and shoulder tilt without the internet.
+*   **On-Device Pose Tracking:** Offline AI (ML Kit) maps the 12 key body joints (shoulders, elbows, wrists, hips, knees, ankles) to visualize spine angle, hip rotation, and shoulder tilt without the internet.
 *   **Swing Plane Visualizer:** Draws customizable, persistent lines (shaft plane, elbow plane) over your video to instantly spot "over the top" or "under plane" flaws.
 *   **Auto-Trim & Clip:** The app intelligently crops your raw 2-minute driving range video down to just the 3-second window containing the actual swing.
 
